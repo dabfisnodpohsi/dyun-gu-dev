@@ -1,13 +1,19 @@
 [package]
-name = "dg-runtime"
+name = "dg-openvino"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+backend = ["dep:openvino", "openvino/runtime-linking"]
+
 [dependencies]
 dg-core = { path = "../dg-core" }
+dg-runtime = { path = "../dg-runtime" }
 inventory.workspace = true
+openvino = { workspace = true, optional = true, default-features = false }
 thiserror.workspace = true
 tracing.workspace = true
