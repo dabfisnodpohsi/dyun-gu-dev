@@ -87,17 +87,34 @@ impl OpenVINOBackend {
     }
 
     fn tensor_info_from_port(port: &Node) -> Result<TensorInfo> {
-        let shape = port
-            .get_shape()
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        let dims = shape
-            .get_dimensions()
-            .iter()
-            .map(|dim| {
-                usize::try_from(*dim)
-                    .map_err(|_| Error::Backend("negative OpenVINO dimension".to_string()))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let dims = match port.get_shape() {
+            Ok(shape) => shape
+                .get_dimensions()
+                .iter()
+                .map(|dim| {
+                    usize::try_from(*dim)
+                        .map_err(|_| Error::Backend("negative OpenVINO dimension".to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Err(_) => {
+                let partial_shape = port
+                    .get_partial_shape()
+                    .map_err(|err| Error::Backend(err.to_string()))?;
+                partial_shape
+                    .get_dimensions()
+                    .iter()
+                    .map(|dimension| {
+                        if dimension.is_dynamic() {
+                            Ok(1usize)
+                        } else {
+                            usize::try_from(dimension.get_max()).map_err(|_| {
+                                Error::Backend("negative OpenVINO dimension".to_string())
+                            })
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+        };
 
         let mut info = TensorInfo::new(
             Shape::new(dims),
@@ -224,7 +241,7 @@ impl InferBackend for OpenVINOBackend {
         let Some(option) = &self.option else {
             return Err(Error::InvalidOption("backend not initialized".to_string()));
         };
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_ref() else {
             return Err(Error::InvalidOption("model not initialized".to_string()));
         };
         if input_shapes.len() != self.input_infos.len() {
@@ -250,10 +267,7 @@ impl InferBackend for OpenVINOBackend {
                 &dims,
             )
             .map_err(|err| Error::Backend(err.to_string()))?;
-            let port = self
-                .compiled_model
-                .as_ref()
-                .ok_or_else(|| Error::InvalidOption("compiled model missing".to_string()))?
+            let port = model
                 .get_input_by_index(index)
                 .map_err(|err| Error::Backend(err.to_string()))?;
             input_ports.push(port);
@@ -262,6 +276,9 @@ impl InferBackend for OpenVINOBackend {
 
         let pairs: Vec<(&Node, &PartialShape)> =
             input_ports.iter().zip(partial_shapes.iter()).collect();
+        let Some(model) = self.model.as_mut() else {
+            return Err(Error::InvalidOption("model not initialized".to_string()));
+        };
         model
             .reshape_by_ports(&pairs)
             .map_err(|err| Error::Backend(err.to_string()))?;
@@ -299,6 +316,24 @@ impl InferBackend for OpenVINOBackend {
                 info
             })
             .collect();
+
+        let output_count = self
+            .compiled_model
+            .as_ref()
+            .ok_or_else(|| Error::InvalidOption("compiled model missing".to_string()))?
+            .get_output_size()
+            .map_err(|err| Error::Backend(err.to_string()))?;
+        let mut output_infos = Vec::with_capacity(output_count);
+        for index in 0..output_count {
+            let port = self
+                .compiled_model
+                .as_ref()
+                .ok_or_else(|| Error::InvalidOption("compiled model missing".to_string()))?
+                .get_output_by_index(index)
+                .map_err(|err| Error::Backend(err.to_string()))?;
+            output_infos.push(Self::tensor_info_from_port(&port)?);
+        }
+        self.output_infos = output_infos;
         Ok(())
     }
 
