@@ -62,10 +62,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.103"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+
+[[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "avcodec-core-model"
+version = "0.1.0"
+source = "git+https://git-manager.devin.ai/proxy/github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=621a708b725f9b9c7e6da7e43382e2066f741aaf#621a708b725f9b9c7e6da7e43382e2066f741aaf"
+dependencies = [
+ "spin",
+]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindgen"
@@ -106,6 +137,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,6 +169,56 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "cheetah-codec"
+version = "0.1.0"
+source = "git+https://git-manager.devin.ai/proxy/github.com/ChungTak/cheetah-media-server-rs-dev.git?rev=182621c393eff754660a445d174a61e41622c660#182621c393eff754660a445d174a61e41622c660"
+dependencies = [
+ "base64",
+ "bitflags 2.13.0",
+ "bytes",
+ "smallvec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cheetah-runtime-api"
+version = "0.1.0"
+source = "git+https://git-manager.devin.ai/proxy/github.com/ChungTak/cheetah-media-server-rs-dev.git?rev=182621c393eff754660a445d174a61e41622c660#182621c393eff754660a445d174a61e41622c660"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "cheetah-codec",
+ "futures",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cheetah-sdk"
+version = "0.1.0"
+source = "git+https://git-manager.devin.ai/proxy/github.com/ChungTak/cheetah-media-server-rs-dev.git?rev=182621c393eff754660a445d174a61e41622c660#182621c393eff754660a445d174a61e41622c660"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "cheetah-codec",
+ "cheetah-runtime-api",
+ "cheetah-sdk-macros",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cheetah-sdk-macros"
+version = "0.1.0"
+source = "git+https://git-manager.devin.ai/proxy/github.com/ChungTak/cheetah-media-server-rs-dev.git?rev=182621c393eff754660a445d174a61e41622c660#182621c393eff754660a445d174a61e41622c660"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "clang-sys"
@@ -232,6 +322,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "dg-media"
+version = "0.1.0"
+dependencies = [
+ "dg-core",
+ "dg-graph",
+ "dg-media-avcodec",
+ "dg-runtime",
+ "dg-scheduler",
+ "proptest",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "dg-media-avcodec"
+version = "0.1.0"
+dependencies = [
+ "avcodec-core-model",
+]
+
+[[package]]
 name = "dg-openvino"
 version = "0.1.0"
 dependencies = [
@@ -287,6 +399,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dg-stream"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "dg-core",
+ "dg-media",
+ "dg-stream-cheetah",
+ "futures",
+ "proptest",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "dg-stream-cheetah"
+version = "0.1.0"
+dependencies = [
+ "cheetah-codec",
+ "cheetah-runtime-api",
+ "cheetah-sdk",
+]
+
+[[package]]
 name = "dg-tensorrt"
 version = "0.1.0"
 dependencies = [
@@ -339,6 +476,94 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "futures"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-channel"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+]
+
+[[package]]
+name = "futures-core"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-io"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+
+[[package]]
+name = "futures-macro"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "futures-sink"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
+
+[[package]]
+name = "futures-task"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+
+[[package]]
+name = "futures-util"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-macro",
+ "futures-sink",
+ "futures-task",
+ "memchr",
+ "pin-project-lite",
+ "slab",
+]
 
 [[package]]
 name = "getrandom"
@@ -784,6 +1009,24 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "slab"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "smallvec"
+version = "1.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "syn"

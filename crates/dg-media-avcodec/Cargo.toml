@@ -1,0 +1,14 @@
+[package]
+name = "dg-media-avcodec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+avcodec = ["dep:avcodec-core"]
+
+[dependencies]
+avcodec-core = { git = "https://git-manager.devin.ai/proxy/github.com/TimothyWalker6922/avcodec-rs-develop.git", rev = "621a708b725f9b9c7e6da7e43382e2066f741aaf", package = "avcodec-core-model", default-features = false, features = ["std"], optional = true }

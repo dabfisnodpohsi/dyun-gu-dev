@@ -47,4 +47,11 @@ impl Packet {
             PacketPayload::EndOfStream => None,
         }
     }
+
+    pub fn into_tensor(self) -> Option<Tensor> {
+        match Arc::try_unwrap(self.payload) {
+            Ok(PacketPayload::Tensor(tensor)) => Some(tensor),
+            Ok(PacketPayload::EndOfStream) | Err(_) => None,
+        }
+    }
 }

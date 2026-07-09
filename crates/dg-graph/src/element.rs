@@ -16,16 +16,11 @@ pub struct PortSchema {
     pub dtype: Option<DataType>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum ElementHandle {
+    #[default]
     None,
     Sink(Arc<std::sync::Mutex<Vec<Tensor>>>),
-}
-
-impl Default for ElementHandle {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 pub struct CreatedElement {

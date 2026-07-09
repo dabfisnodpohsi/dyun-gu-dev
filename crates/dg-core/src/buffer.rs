@@ -1,6 +1,8 @@
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::{DeviceKind, Error, MemoryType, Result};
+use crate::{
+    DeviceKind, Error, ExternalDropGuard, ExternalHandle, MemoryDomain, MemoryType, Result,
+};
 
 /// Buffer descriptor used for allocations and validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -18,21 +20,24 @@ impl BufferDesc {
 #[derive(Clone, Debug)]
 enum BufferStorage {
     Host(Arc<RwLock<Vec<u8>>>),
-    External(Arc<[u8]>),
+    External {
+        bytes: Arc<RwLock<Vec<u8>>>,
+        _guard: Arc<ExternalDropGuard>,
+    },
 }
 
 impl BufferStorage {
     fn len(&self) -> usize {
         match self {
             Self::Host(bytes) => read_guard(bytes).len(),
-            Self::External(bytes) => bytes.len(),
+            Self::External { bytes, .. } => read_guard(bytes).len(),
         }
     }
 
     fn read_bytes(&self) -> Vec<u8> {
         match self {
             Self::Host(bytes) => read_guard(bytes).clone(),
-            Self::External(bytes) => bytes.to_vec(),
+            Self::External { bytes, .. } => read_guard(bytes).clone(),
         }
     }
 
@@ -48,7 +53,16 @@ impl BufferStorage {
                 guard.copy_from_slice(src);
                 Ok(())
             }
-            Self::External(_) => Err(Error::Buffer("buffer is immutable".to_string())),
+            Self::External { bytes, .. } => {
+                let mut guard = write_guard(bytes);
+                if guard.len() != src.len() {
+                    return Err(Error::Buffer(
+                        "source and destination size differ".to_string(),
+                    ));
+                }
+                guard.copy_from_slice(src);
+                Ok(())
+            }
         }
     }
 }
@@ -71,8 +85,9 @@ fn write_guard(lock: &RwLock<Vec<u8>>) -> RwLockWriteGuard<'_, Vec<u8>> {
 #[derive(Clone, Debug)]
 pub struct Buffer {
     device: DeviceKind,
-    memory_type: MemoryType,
+    domain: MemoryDomain,
     desc: BufferDesc,
+    external: ExternalHandle,
     storage: Arc<BufferStorage>,
 }
 
@@ -80,8 +95,9 @@ impl Buffer {
     pub(crate) fn new_host(device: DeviceKind, desc: BufferDesc) -> Self {
         Self {
             device,
-            memory_type: MemoryType::Host,
+            domain: MemoryDomain::Host,
             desc,
+            external: ExternalHandle::none(),
             storage: Arc::new(BufferStorage::Host(Arc::new(RwLock::new(vec![
                 0;
                 desc.size_bytes
@@ -89,7 +105,33 @@ impl Buffer {
         }
     }
 
-    pub fn from_external(device: DeviceKind, desc: BufferDesc, bytes: Vec<u8>) -> Result<Self> {
+    pub fn allocate_host(device: DeviceKind, size_bytes: usize) -> Self {
+        Self::new_host(device, BufferDesc::new(size_bytes, 1))
+    }
+
+    pub fn from_host_bytes(device: DeviceKind, desc: BufferDesc, bytes: Vec<u8>) -> Result<Self> {
+        if bytes.len() != desc.size_bytes {
+            return Err(Error::Buffer(
+                "host bytes do not match descriptor size".to_string(),
+            ));
+        }
+        Ok(Self {
+            device,
+            domain: MemoryDomain::Host,
+            desc,
+            external: ExternalHandle::none(),
+            storage: Arc::new(BufferStorage::Host(Arc::new(RwLock::new(bytes)))),
+        })
+    }
+
+    pub fn from_external(
+        device: DeviceKind,
+        domain: MemoryDomain,
+        desc: BufferDesc,
+        external: ExternalHandle,
+        bytes: Vec<u8>,
+        guard: ExternalDropGuard,
+    ) -> Result<Self> {
         if bytes.len() != desc.size_bytes {
             return Err(Error::Buffer(
                 "external bytes do not match descriptor size".to_string(),
@@ -97,11 +139,13 @@ impl Buffer {
         }
         Ok(Self {
             device,
-            memory_type: MemoryType::Host,
+            domain,
             desc,
-            storage: Arc::new(BufferStorage::External(Arc::<[u8]>::from(
-                bytes.into_boxed_slice(),
-            ))),
+            external,
+            storage: Arc::new(BufferStorage::External {
+                bytes: Arc::new(RwLock::new(bytes)),
+                _guard: Arc::new(guard),
+            }),
         })
     }
 
@@ -109,8 +153,21 @@ impl Buffer {
         self.device
     }
 
+    pub fn domain(&self) -> MemoryDomain {
+        self.domain
+    }
+
     pub fn memory_type(&self) -> MemoryType {
-        self.memory_type
+        match self.domain {
+            MemoryDomain::Host => MemoryType::Host,
+            MemoryDomain::DmaBuf
+            | MemoryDomain::DrmPrime
+            | MemoryDomain::VaapiSurface
+            | MemoryDomain::CudaDevice
+            | MemoryDomain::MppBuffer
+            | MemoryDomain::SophonDevice
+            | MemoryDomain::Opaque => MemoryType::Device,
+        }
     }
 
     pub fn desc(&self) -> BufferDesc {
@@ -131,6 +188,31 @@ impl Buffer {
 
     pub fn read_bytes(&self) -> Vec<u8> {
         self.storage.read_bytes()
+    }
+
+    /// Consumes the buffer and returns host bytes, moving them out when possible.
+    pub fn into_host_bytes(self) -> Vec<u8> {
+        let Self { storage, .. } = self;
+        match Arc::try_unwrap(storage) {
+            Ok(BufferStorage::Host(bytes)) => match Arc::try_unwrap(bytes) {
+                Ok(lock) => match lock.into_inner() {
+                    Ok(bytes) => bytes,
+                    Err(poisoned) => poisoned.into_inner(),
+                },
+                Err(bytes) => read_guard(&bytes).clone(),
+            },
+            Ok(BufferStorage::External { bytes, .. }) => match Arc::try_unwrap(bytes) {
+                Ok(lock) => match lock.into_inner() {
+                    Ok(bytes) => bytes,
+                    Err(poisoned) => poisoned.into_inner(),
+                },
+                Err(bytes) => read_guard(&bytes).clone(),
+            },
+            Err(storage) => match &*storage {
+                BufferStorage::Host(bytes) => read_guard(bytes).clone(),
+                BufferStorage::External { bytes, .. } => read_guard(bytes).clone(),
+            },
+        }
     }
 
     pub fn write_from_slice(&self, src: &[u8]) -> Result<()> {
@@ -155,5 +237,9 @@ impl Buffer {
     pub fn copy_to(&self, dst: &Buffer) -> Result<()> {
         let bytes = self.read_bytes();
         dst.write_from_slice(&bytes)
+    }
+
+    pub fn external(&self) -> ExternalHandle {
+        self.external
     }
 }

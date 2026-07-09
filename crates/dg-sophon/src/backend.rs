@@ -79,20 +79,20 @@ impl SophonBackend {
     }
 
     fn validate(option: &RuntimeOption, sophon: &SophonOptions) -> Result<()> {
-        if let Some(precision) = option.precision
-            && !supports_precision(BackendKind::Sophon, precision)
-        {
-            return Err(Error::UnsupportedPrecision(precision));
+        if let Some(precision) = option.precision {
+            if !supports_precision(BackendKind::Sophon, precision) {
+                return Err(Error::UnsupportedPrecision(precision));
+            }
         }
-        if let Some(device) = option.device
-            && !supports_device(BackendKind::Sophon, device)
-        {
-            return Err(Error::UnsupportedDevice(device));
+        if let Some(device) = option.device {
+            if !supports_device(BackendKind::Sophon, device) {
+                return Err(Error::UnsupportedDevice(device));
+            }
         }
-        if let Some(deploy_mode) = option.deploy_mode
-            && !supports_deployment(BackendKind::Sophon, deploy_mode)
-        {
-            return Err(Error::UnsupportedDeployment(deploy_mode));
+        if let Some(deploy_mode) = option.deploy_mode {
+            if !supports_deployment(BackendKind::Sophon, deploy_mode) {
+                return Err(Error::UnsupportedDeployment(deploy_mode));
+            }
         }
         if !supports_deployment(BackendKind::Sophon, sophon.deploy_mode) {
             return Err(Error::UnsupportedDeployment(sophon.deploy_mode));

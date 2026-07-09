@@ -1,0 +1,27 @@
+[package]
+name = "dg-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+avcodec = ["dep:dg-media-avcodec", "dg-media-avcodec/avcodec"]
+
+[dependencies]
+dg-core = { path = "../dg-core" }
+dg-graph = { path = "../dg-graph" }
+dg-runtime = { path = "../dg-runtime" }
+dg-scheduler = { path = "../dg-scheduler" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dependencies.dg-media-avcodec]
+path = "../dg-media-avcodec"
+optional = true
+
+[dev-dependencies]
+proptest.workspace = true

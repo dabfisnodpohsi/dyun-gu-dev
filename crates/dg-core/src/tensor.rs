@@ -123,6 +123,14 @@ impl Tensor {
         &self.buffer
     }
 
+    pub fn into_parts(self) -> (TensorDesc, Buffer) {
+        (self.desc, self.buffer)
+    }
+
+    pub fn into_buffer(self) -> Buffer {
+        self.buffer
+    }
+
     pub fn reshape(&mut self, shape: Shape) -> Result<()> {
         let old_elements = self.desc.shape.element_count()?;
         let new_elements = shape.element_count()?;

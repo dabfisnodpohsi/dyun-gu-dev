@@ -1,0 +1,28 @@
+[package]
+name = "dg-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+cheetah = ["dep:dg-stream-cheetah", "dg-stream-cheetah/cheetah"]
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+dg-core = { path = "../dg-core" }
+dg-media = { path = "../dg-media" }
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dependencies.dg-stream-cheetah]
+path = "../dg-stream-cheetah"
+optional = true
+
+[dev-dependencies]
+proptest.workspace = true

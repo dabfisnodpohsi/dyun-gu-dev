@@ -103,15 +103,15 @@ impl RknnBackend {
     fn init_context(&mut self, option: &RuntimeOption) -> Result<()> {
         trace!("initializing RKNN backend");
         Self::validate_precision(option)?;
-        if let Some(device) = option.device
-            && !supports_device(BackendKind::Rknn, device)
-        {
-            return Err(Error::UnsupportedDevice(device));
+        if let Some(device) = option.device {
+            if !supports_device(BackendKind::Rknn, device) {
+                return Err(Error::UnsupportedDevice(device));
+            }
         }
-        if let Some(deploy_mode) = option.deploy_mode
-            && !supports_deployment(BackendKind::Rknn, deploy_mode)
-        {
-            return Err(Error::UnsupportedDeployment(deploy_mode));
+        if let Some(deploy_mode) = option.deploy_mode {
+            if !supports_deployment(BackendKind::Rknn, deploy_mode) {
+                return Err(Error::UnsupportedDeployment(deploy_mode));
+            }
         }
         let BackendOptions::Rknn(options) = &option.backend_options else {
             return Err(Error::InvalidOption(
