@@ -40,12 +40,20 @@ struct ModelBuffer {
 }
 
 impl ModelBuffer {
+    fn new(data: Vec<u8>) -> Result<Self> {
+        let _size: u32 = data
+            .len()
+            .try_into()
+            .map_err(|_| Error::InvalidOption("rknn model is too large".to_string()))?;
+        Ok(Self { data })
+    }
+
     fn as_ptr(&self) -> *mut c_void {
         self.data.as_ptr() as *mut c_void
     }
 
     fn len(&self) -> u32 {
-        self.data.len().try_into().expect("model size checked")
+        self.data.len() as u32
     }
 }
 
@@ -95,16 +103,9 @@ impl RknnBackend {
                         path.display()
                     ))
                 })?;
-                Ok(ModelBuffer { data })
+                ModelBuffer::new(data)
             }
-            dg_runtime::ModelSource::Bytes(bytes) => {
-                let data = bytes.clone();
-                let _size: u32 = data
-                    .len()
-                    .try_into()
-                    .map_err(|_| Error::InvalidOption("rknn model is too large".to_string()))?;
-                Ok(ModelBuffer { data })
-            }
+            dg_runtime::ModelSource::Bytes(bytes) => ModelBuffer::new(bytes.clone()),
         }
     }
 
