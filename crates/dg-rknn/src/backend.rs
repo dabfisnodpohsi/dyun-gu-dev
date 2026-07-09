@@ -5,8 +5,8 @@ use std::ptr;
 
 use dg_core::{DataFormat, DataType, DeviceKind, Shape, Tensor};
 use dg_runtime::{
-    BackendDescriptor, BackendKind, BackendOptions, Error, InferBackend, Result, RknnOptions,
-    RuntimeOption, TensorInfo,
+    supports_deployment, supports_device, supports_precision, BackendDescriptor, BackendKind,
+    BackendOptions, Error, InferBackend, Result, RknnOptions, RuntimeOption, TensorInfo,
 };
 use tracing::trace;
 
@@ -78,16 +78,7 @@ impl RknnBackend {
         let Some(precision) = option.precision else {
             return Ok(());
         };
-
-        let supported = precision == DataType::F32
-            || precision == DataType::F16
-            || precision == DataType::U8
-            || precision == DataType::I8
-            || precision == DataType::U16
-            || precision == DataType::I16
-            || precision == DataType::new(dg_core::TypeCode::Uint, 32, 1)
-            || precision == DataType::new(dg_core::TypeCode::Int, 32, 1);
-        if supported {
+        if supports_precision(BackendKind::Rknn, precision) {
             Ok(())
         } else {
             Err(Error::UnsupportedPrecision(precision))
@@ -112,6 +103,16 @@ impl RknnBackend {
     fn init_context(&mut self, option: &RuntimeOption) -> Result<()> {
         trace!("initializing RKNN backend");
         Self::validate_precision(option)?;
+        if let Some(device) = option.device
+            && !supports_device(BackendKind::Rknn, device)
+        {
+            return Err(Error::UnsupportedDevice(device));
+        }
+        if let Some(deploy_mode) = option.deploy_mode
+            && !supports_deployment(BackendKind::Rknn, deploy_mode)
+        {
+            return Err(Error::UnsupportedDeployment(deploy_mode));
+        }
         let BackendOptions::Rknn(options) = &option.backend_options else {
             return Err(Error::InvalidOption(
                 "rknn backend requires Rknn backend options".to_string(),

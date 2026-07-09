@@ -6,6 +6,8 @@ pub enum BackendKind {
     Mock,
     OpenVINO,
     Rknn,
+    TensorRt,
+    Sophon,
 }
 
 /// A backend implementation.

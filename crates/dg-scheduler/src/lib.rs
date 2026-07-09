@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use dg_core::DeviceKind;
+use dg_core::{DeployMode, DeviceKind};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -48,13 +48,6 @@ pub enum Error {
     NoAvailableCore,
 }
 
-/// Deployment mode for a topology.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeploymentMode {
-    SoC,
-    Host,
-}
-
 /// A schedulable device with a numeric card id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
@@ -72,12 +65,12 @@ pub struct Core {
 /// A device/core topology.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Topology {
-    deployment: DeploymentMode,
+    deployment: DeployMode,
     devices: Vec<Device>,
 }
 
 impl Topology {
-    pub fn new(deployment: DeploymentMode, devices: Vec<Device>) -> Result<Self> {
+    pub fn new(deployment: DeployMode, devices: Vec<Device>) -> Result<Self> {
         validate_topology(&devices)?;
         Ok(Self {
             deployment,
@@ -87,7 +80,7 @@ impl Topology {
 
     pub fn single_chip(kind: DeviceKind, core_count: u8) -> Result<Self> {
         Self::new(
-            DeploymentMode::SoC,
+            DeployMode::SoC,
             vec![Device {
                 kind,
                 id: 0,
@@ -98,7 +91,7 @@ impl Topology {
 
     pub fn single_card_multi_core(kind: DeviceKind, card: u16, core_count: u8) -> Result<Self> {
         Self::new(
-            DeploymentMode::Host,
+            DeployMode::Host,
             vec![Device {
                 kind,
                 id: card,
@@ -119,10 +112,10 @@ impl Topology {
                 cores: cores_from_count(core_count),
             })
             .collect();
-        Self::new(DeploymentMode::Host, devices)
+        Self::new(DeployMode::Host, devices)
     }
 
-    pub fn deployment(&self) -> DeploymentMode {
+    pub fn deployment(&self) -> DeployMode {
         self.deployment
     }
 
@@ -583,7 +576,7 @@ mod tests {
 
     #[test]
     fn invalid_mask_and_empty_topology_error_cleanly() {
-        let err = Topology::new(DeploymentMode::Host, Vec::new()).expect_err("empty");
+        let err = Topology::new(DeployMode::Host, Vec::new()).expect_err("empty");
         assert!(matches!(err, Error::EmptyTopology));
 
         let scheduler = rknn_topology();

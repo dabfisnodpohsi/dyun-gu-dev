@@ -4,7 +4,9 @@ members = [
     "crates/dg-core",
     "crates/dg-runtime",
     "crates/dg-openvino",
+    "crates/dg-sophon",
     "crates/dg-rknn",
+    "crates/dg-tensorrt",
     "crates/dg-scheduler",
     "crates/dg-graph",
     "crates/dg-elements",
@@ -24,6 +26,7 @@ half = "2"
 inventory = "0.3"
 indexmap = "=2.3.0"
 bindgen = "0.70"
+cc = "=1.2.57"
 openvino = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

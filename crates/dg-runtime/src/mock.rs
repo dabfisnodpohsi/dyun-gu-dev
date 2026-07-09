@@ -4,6 +4,7 @@ use dg_core::{DataFormat, DataType, Shape, Tensor};
 
 use crate::{
     backend::{BackendDescriptor, BackendKind, InferBackend},
+    capabilities::{supports_deployment, supports_device, supports_precision},
     error::{Error, Result},
     option::{BackendOptions, RuntimeOption},
     TensorInfo,
@@ -46,27 +47,6 @@ impl MockBackend {
             output_infos: Vec::new(),
         }
     }
-
-    fn validate_precision(option: &RuntimeOption) -> Result<()> {
-        let Some(precision) = option.precision else {
-            return Ok(());
-        };
-
-        let supported = precision == DataType::F32
-            || precision == DataType::F16
-            || precision == DataType::BF16
-            || precision == DataType::U8
-            || precision == DataType::I8
-            || precision == DataType::I16
-            || precision == DataType::U16
-            || precision == DataType::new(dg_core::TypeCode::Int, 32, 1)
-            || precision == DataType::new(dg_core::TypeCode::Uint, 32, 1);
-        if supported {
-            Ok(())
-        } else {
-            Err(Error::UnsupportedPrecision(precision))
-        }
-    }
 }
 
 impl InferBackend for MockBackend {
@@ -76,7 +56,21 @@ impl InferBackend for MockBackend {
 
     fn init(&mut self, option: &RuntimeOption) -> Result<()> {
         trace!("initializing mock backend");
-        Self::validate_precision(option)?;
+        if let Some(precision) = option.precision {
+            if !supports_precision(BackendKind::Mock, precision) {
+                return Err(Error::UnsupportedPrecision(precision));
+            }
+        }
+        if let Some(device) = option.device {
+            if !supports_device(BackendKind::Mock, device) {
+                return Err(Error::UnsupportedDevice(device));
+            }
+        }
+        if let Some(deploy_mode) = option.deploy_mode {
+            if !supports_deployment(BackendKind::Mock, deploy_mode) {
+                return Err(Error::UnsupportedDeployment(deploy_mode));
+            }
+        }
         let BackendOptions::Mock(options) = &option.backend_options else {
             return Err(Error::InvalidOption(
                 "mock backend requires Mock backend options".to_string(),

@@ -1,0 +1,23 @@
+[package]
+name = "dg-tensorrt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+backend = []
+
+[dependencies]
+dg-core = { path = "../dg-core" }
+dg-runtime = { path = "../dg-runtime" }
+inventory.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+bindgen.workspace = true
+cc.workspace = true

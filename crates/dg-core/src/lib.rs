@@ -8,6 +8,7 @@
 
 mod buffer;
 mod datatype;
+mod deployment;
 mod device;
 mod error;
 mod format;
@@ -20,6 +21,7 @@ pub use buffer::{Buffer, BufferDesc};
 pub use datatype::{
     pack_float4, pack_int4, unpack_float4, unpack_int4, DataType, NativeDataType, TypeCode,
 };
+pub use deployment::DeployMode;
 pub use device::{CpuDevice, Device, DeviceKind, MemoryType};
 pub use error::{Error, Result};
 pub use format::DataFormat;

@@ -1,3 +1,4 @@
+use dg_core::{DeployMode, DeviceKind};
 use thiserror::Error;
 
 /// Result type used by runtime abstractions.
@@ -14,6 +15,10 @@ pub enum Error {
     UnsupportedBackend(crate::backend::BackendKind),
     #[error("unsupported precision: {0:?}")]
     UnsupportedPrecision(dg_core::DataType),
+    #[error("unsupported device: {0:?}")]
+    UnsupportedDevice(DeviceKind),
+    #[error("unsupported deployment mode: {0:?}")]
+    UnsupportedDeployment(DeployMode),
     #[error("unsupported model source: {0}")]
     UnsupportedModelSource(String),
     #[error("backend unavailable: {0}")]

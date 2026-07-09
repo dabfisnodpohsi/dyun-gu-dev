@@ -2,8 +2,8 @@ use std::convert::TryFrom;
 
 use dg_core::{DataFormat, DataType, Shape, Tensor};
 use dg_runtime::{
-    BackendDescriptor, BackendKind, BackendOptions, Error, InferBackend, ModelSource, Result,
-    RuntimeOption, TensorInfo,
+    supports_deployment, supports_device, supports_precision, BackendDescriptor, BackendKind,
+    BackendOptions, Error, InferBackend, ModelSource, Result, RuntimeOption, TensorInfo,
 };
 use openvino::{
     Core, DeviceType, ElementType, InferRequest, Model, Node, PartialShape, Tensor as OvTensor,
@@ -184,6 +184,21 @@ impl InferBackend for OpenVINOBackend {
     fn init(&mut self, option: &RuntimeOption) -> Result<()> {
         trace!("initializing OpenVINO backend");
         let openvino_options = Self::openvino_options(option)?;
+        if let Some(precision) = option.precision
+            && !supports_precision(BackendKind::OpenVINO, precision)
+        {
+            return Err(Error::UnsupportedPrecision(precision));
+        }
+        if let Some(device) = option.device
+            && !supports_device(BackendKind::OpenVINO, device)
+        {
+            return Err(Error::UnsupportedDevice(device));
+        }
+        if let Some(deploy_mode) = option.deploy_mode
+            && !supports_deployment(BackendKind::OpenVINO, deploy_mode)
+        {
+            return Err(Error::UnsupportedDeployment(deploy_mode));
+        }
         let mut core = Core::new().map_err(|err| Error::BackendUnavailable(err.to_string()))?;
         let device = DeviceType::from(openvino_options.device.as_str()).to_owned();
         let model = Self::read_model(&mut core, &option.model_source)?;
@@ -211,16 +226,6 @@ impl InferBackend for OpenVINOBackend {
                 .get_output_by_index(index)
                 .map_err(|err| Error::Backend(err.to_string()))?;
             output_infos.push(Self::tensor_info_from_port(&port)?);
-        }
-
-        if let Some(requested_precision) = option.precision {
-            let supported = input_infos
-                .iter()
-                .chain(output_infos.iter())
-                .all(|info| info.dtype == requested_precision);
-            if !supported {
-                return Err(Error::UnsupportedPrecision(requested_precision));
-            }
         }
 
         let mut compiled_model = compiled_model;
