@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{RecvTimeoutError, TrySendError};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -11,6 +11,7 @@ use dg_core::{Classification, DataType, Detection, FaceDetection, OcrText, Tenso
 
 use crate::error::{Error, Result};
 use crate::packet::Packet;
+use crate::pipe::{PipeReceiver, PipeSender};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PortSchema {
@@ -47,8 +48,8 @@ pub trait Element: Send {
 
 pub struct ElementIo {
     pub name: String,
-    pub inputs: HashMap<String, Receiver<Packet>>,
-    pub outputs: HashMap<String, Vec<SyncSender<Packet>>>,
+    pub inputs: HashMap<String, PipeReceiver>,
+    pub outputs: HashMap<String, Vec<PipeSender>>,
     pub stop: Arc<AtomicBool>,
     pub send_backoff: Duration,
 }
@@ -61,8 +62,8 @@ impl ElementIo {
         })?;
         match receiver.recv_timeout(self.send_backoff) {
             Ok(packet) => Ok(Some(packet)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Error::Runtime(format!(
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(Error::Runtime(format!(
                 "receive failed on {port}: disconnected"
             ))),
         }

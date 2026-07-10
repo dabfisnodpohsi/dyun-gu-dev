@@ -3,17 +3,56 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
 
+use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::element::PortSchema;
 use crate::error::{Error, Result};
+use crate::pipe::DEFAULT_QUEUE_CAPACITY;
 use crate::registry::element_ports;
 
 const DEFAULT_API_VERSION: &str = "dg/v1";
 const DEFAULT_KIND: &str = "Graph";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// How graph elements are scheduled onto threads (from nndeploy).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelType {
+    /// Elements run one at a time in topological order on the calling thread.
+    Sequential,
+    /// Elements run as dataflow tasks on a work-stealing pool once their
+    /// upstream elements complete.
+    Task,
+    /// Every element gets a dedicated pool thread; bounded pipes apply
+    /// backpressure between concurrently running elements.
+    #[default]
+    Pipeline,
+}
+
+/// Execution parameters for a graph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ExecutionSpec {
+    pub parallel: ParallelType,
+    /// Capacity of each bounded `DataPipe` in pipeline mode.
+    pub queue_capacity: usize,
+    /// Worker count for task mode; defaults to available parallelism.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workers: Option<usize>,
+}
+
+impl Default for ExecutionSpec {
+    fn default() -> Self {
+        Self {
+            parallel: ParallelType::default(),
+            queue_capacity: DEFAULT_QUEUE_CAPACITY,
+            workers: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTemplate {
     pub kind: String,
@@ -23,7 +62,7 @@ pub struct NodeTemplate {
     pub params: Value,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeSpec {
     pub name: String,
@@ -75,7 +114,7 @@ impl Display for ConnectionSpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GraphSpec {
     #[serde(rename = "apiVersion", default = "default_api_version")]
@@ -90,6 +129,8 @@ pub struct GraphSpec {
     pub templates: BTreeMap<String, NodeTemplate>,
     #[serde(default)]
     pub allow_cycles: bool,
+    #[serde(default)]
+    pub execution: ExecutionSpec,
     #[serde(default)]
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
@@ -113,6 +154,7 @@ impl Default for GraphSpec {
             variables: BTreeMap::new(),
             templates: BTreeMap::new(),
             allow_cycles: false,
+            execution: ExecutionSpec::default(),
             nodes: Vec::new(),
             connections: Vec::new(),
         }
@@ -138,6 +180,11 @@ impl GraphFormat {
 }
 
 impl GraphSpec {
+    /// Exports the JSON Schema describing the configuration model.
+    pub fn json_schema() -> Result<String> {
+        Ok(serde_json::to_string_pretty(&schema_for!(GraphSpec))?)
+    }
+
     pub fn from_str_with_format(input: &str, format: GraphFormat) -> Result<Self> {
         let spec = match format {
             GraphFormat::Yaml => serde_yaml_ng::from_str(input)?,
@@ -200,6 +247,7 @@ impl GraphSpec {
         self.nodes.extend(other.nodes);
         self.connections.extend(other.connections);
         self.allow_cycles |= other.allow_cycles;
+        self.execution = other.execution;
         self.api_version = other.api_version;
         self.kind = other.kind;
     }
@@ -230,6 +278,27 @@ impl GraphSpec {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.execution.queue_capacity == 0 {
+            return Err(Error::Validation {
+                path: "execution.queue_capacity".to_string(),
+                message: "queue_capacity must be at least 1".to_string(),
+            });
+        }
+        match (self.execution.parallel, self.execution.workers) {
+            (_, Some(0)) => {
+                return Err(Error::Validation {
+                    path: "execution.workers".to_string(),
+                    message: "workers must be at least 1".to_string(),
+                });
+            }
+            (ParallelType::Sequential | ParallelType::Pipeline, Some(_)) => {
+                return Err(Error::Validation {
+                    path: "execution.workers".to_string(),
+                    message: "workers is only supported with task parallelism".to_string(),
+                });
+            }
+            _ => {}
+        }
         let mut seen = BTreeSet::new();
         for node in &self.nodes {
             if !seen.insert(&node.name) {
@@ -422,6 +491,11 @@ impl GraphSpecBuilder {
 
     pub fn allow_cycles(mut self, allow_cycles: bool) -> Self {
         self.spec.allow_cycles = allow_cycles;
+        self
+    }
+
+    pub fn execution(mut self, execution: ExecutionSpec) -> Self {
+        self.spec.execution = execution;
         self
     }
 
