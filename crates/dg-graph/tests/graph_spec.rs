@@ -6,7 +6,8 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dg_graph::{
-    watch, ConnectionSpec, Graph, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec, NodeTemplate,
+    watch, ConnectionSpec, DefaultsSpec, Graph, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec,
+    NodeTemplate,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -127,6 +128,23 @@ fn semantic_connections(spec: &GraphSpec) -> BTreeSet<String> {
     spec.connections.iter().cloned().collect()
 }
 
+fn inference_graph() -> GraphSpecBuilder {
+    GraphSpecBuilder::new()
+        .add_node(NodeSpec {
+            name: "source".to_string(),
+            kind: "source".to_string(),
+            template: None,
+            params: json!({"count": 1, "shape": [1, 4]}),
+        })
+        .add_node(NodeSpec {
+            name: "infer".to_string(),
+            kind: "inference".to_string(),
+            template: None,
+            params: json!({}),
+        })
+        .connect("source.out -> infer.in")
+}
+
 proptest! {
     #[test]
     fn graph_diff_apply_preserves_spec_semantics(
@@ -211,6 +229,170 @@ fn graph_spec_validation_rejects_duplicate_names_and_cycles() {
         .connect("b.out -> a.in")
         .build();
     assert!(cycle.is_err());
+}
+
+#[test]
+fn graph_defaults_fill_inference_parameters() {
+    let spec = inference_graph()
+        .defaults(DefaultsSpec {
+            backend: Some("mock".to_string()),
+            device: Some("cpu".to_string()),
+            precision: Some("f32".to_string()),
+        })
+        .build()
+        .expect("defaults should complete inference parameters");
+    let params = &spec.nodes[1].params;
+    assert_eq!(params["backend"], "mock");
+    assert_eq!(params["device"], "cpu");
+    assert_eq!(params["precision"], "f32");
+}
+
+#[test]
+fn graph_defaults_do_not_override_node_parameters() {
+    let spec = GraphSpec {
+        defaults: DefaultsSpec {
+            backend: Some("mock".to_string()),
+            device: Some("cpu".to_string()),
+            precision: Some("f32".to_string()),
+        },
+        nodes: vec![
+            NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                template: None,
+                params: json!({"count": 1, "shape": [1, 4]}),
+            },
+            NodeSpec {
+                name: "infer".to_string(),
+                kind: "inference".to_string(),
+                template: None,
+                params: json!({
+                    "backend": "mock",
+                    "device": "cpu",
+                    "precision": "f16"
+                }),
+            },
+        ],
+        connections: vec!["source.out -> infer.in".to_string()],
+        ..GraphSpec::default()
+    }
+    .normalize_with_base_dir(None)
+    .expect("explicit parameters should remain valid");
+    assert_eq!(spec.nodes[1].params["precision"], "f16");
+}
+
+#[test]
+fn graph_defaults_do_not_override_template_parameters() {
+    let spec = GraphSpec {
+        defaults: DefaultsSpec {
+            backend: Some("mock".to_string()),
+            device: Some("cpu".to_string()),
+            precision: Some("f32".to_string()),
+        },
+        templates: BTreeMap::from([(
+            "inference_defaults".to_string(),
+            NodeTemplate {
+                kind: "inference".to_string(),
+                template: None,
+                params: json!({"precision": "f16"}),
+            },
+        )]),
+        nodes: vec![
+            NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                template: None,
+                params: json!({"count": 1, "shape": [1, 4]}),
+            },
+            NodeSpec {
+                name: "infer".to_string(),
+                kind: "inference".to_string(),
+                template: Some("inference_defaults".to_string()),
+                params: json!({}),
+            },
+        ],
+        connections: vec!["source.out -> infer.in".to_string()],
+        ..GraphSpec::default()
+    }
+    .normalize_with_base_dir(None)
+    .expect("template parameters should remain valid");
+    assert_eq!(spec.nodes[1].params["precision"], "f16");
+}
+
+#[test]
+fn graph_defaults_from_includes_have_lower_precedence() {
+    let root = unique_temp_dir("dg-graph-defaults");
+    fs::create_dir_all(&root).expect("create temp dir");
+    fs::write(
+        root.join("common.yaml"),
+        r#"
+apiVersion: dg/v1
+kind: Graph
+defaults:
+  backend: mock
+  precision: f16
+"#,
+    )
+    .expect("write include");
+    fs::write(
+        root.join("graph.yaml"),
+        r#"
+apiVersion: dg/v1
+kind: Graph
+includes: ["common.yaml"]
+defaults:
+  precision: f32
+  device: cpu
+nodes:
+  - name: source
+    kind: source
+    params:
+      count: 1
+      shape: [1, 4]
+  - name: infer
+    kind: inference
+    params: {}
+connections:
+  - source.out -> infer.in
+"#,
+    )
+    .expect("write graph");
+
+    let spec = GraphSpec::load_from_path(root.join("graph.yaml")).expect("load graph");
+    let params = &spec.nodes[1].params;
+    assert_eq!(params["backend"], "mock");
+    assert_eq!(params["precision"], "f32");
+    assert_eq!(params["device"], "cpu");
+    fs::remove_dir_all(root).expect("remove temp dir");
+}
+
+#[test]
+fn graph_defaults_substitute_variables() {
+    let spec = inference_graph()
+        .variable("default_backend", "mock")
+        .defaults(DefaultsSpec {
+            backend: Some("${default_backend}".to_string()),
+            device: Some("cpu".to_string()),
+            precision: Some("f32".to_string()),
+        })
+        .build()
+        .expect("variable-backed defaults should validate");
+    assert_eq!(spec.nodes[1].params["backend"], "mock");
+}
+
+#[test]
+fn graph_defaults_reject_unknown_fields() {
+    let err = GraphSpec::from_str_with_format(
+        r#"
+apiVersion: dg/v1
+kind: Graph
+defaults:
+  unsupported: value
+"#,
+        GraphFormat::Yaml,
+    )
+    .expect_err("unknown defaults fields should be rejected");
+    assert!(err.to_string().contains("unsupported"));
 }
 
 #[test]
