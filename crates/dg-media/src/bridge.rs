@@ -15,15 +15,23 @@ pub fn frame_to_tensor(frame: MediaFrame) -> Result<Tensor> {
 
 pub fn graph_packet_to_media_frame(packet: Packet) -> MediaFrame {
     let Packet { meta, payload } = packet;
-    match Arc::try_unwrap(payload) {
-        Ok(PacketPayload::Tensor(tensor)) => {
+    let tensor = match Arc::try_unwrap(payload) {
+        Ok(PacketPayload::Tensor(tensor)) => Some(tensor),
+        Ok(PacketPayload::EndOfStream) => None,
+        Err(payload) => match payload.as_ref() {
+            PacketPayload::Tensor(tensor) => Some(tensor.clone()),
+            PacketPayload::EndOfStream => None,
+        },
+    };
+    match tensor {
+        Some(tensor) => {
             let mut frame = MediaFrame::from_tensor(tensor);
             frame.meta.pts = meta.sequence.try_into().ok();
             frame.meta.stream_id = meta.stream_id;
             frame.meta.tags = meta.tags;
             frame
         }
-        Ok(PacketPayload::EndOfStream) | Err(_) => MediaFrame::new(
+        None => MediaFrame::new(
             MediaFrameKind::EndOfStream,
             DataType::U8,
             DataFormat::Auto,
@@ -202,5 +210,55 @@ pub fn core_external_handle_to_avcodec(
     dg_media_avcodec::ExternalHandle {
         fd: value.fd,
         raw: value.raw,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use dg_core::{CpuDevice, DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc};
+    use dg_graph::{Packet, PacketMeta};
+
+    use super::graph_packet_to_media_frame;
+
+    fn test_tensor() -> Tensor {
+        let device = CpuDevice::new();
+        let desc = TensorDesc::new(
+            Shape::new([1, 4]),
+            DataType::U8,
+            DataFormat::NC,
+            DeviceKind::Cpu,
+        );
+        let tensor = Tensor::allocate(&device, desc).expect("allocate test tensor");
+        tensor
+            .buffer()
+            .write_from_slice(&[4, 3, 2, 1])
+            .expect("write test tensor");
+        tensor
+    }
+
+    #[test]
+    fn graph_packet_bridge_preserves_shared_tensor_and_metadata() {
+        let packet = Packet {
+            meta: PacketMeta {
+                sequence: 17,
+                stream_id: Some("stream-a".to_string()),
+                tags: BTreeMap::from([("kind".to_string(), "tensor".to_string())]),
+            },
+            payload: std::sync::Arc::new(dg_graph::PacketPayload::Tensor(test_tensor())),
+        };
+        let cloned_packet = packet.clone();
+
+        let frame = graph_packet_to_media_frame(cloned_packet);
+
+        assert!(!frame.is_end_of_stream());
+        assert_eq!(frame.buffer.read_bytes(), vec![4, 3, 2, 1]);
+        assert_eq!(frame.meta.pts, Some(17));
+        assert_eq!(frame.meta.stream_id.as_deref(), Some("stream-a"));
+        assert_eq!(
+            frame.meta.tags.get("kind").map(String::as_str),
+            Some("tensor")
+        );
     }
 }

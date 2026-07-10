@@ -73,14 +73,6 @@ impl Drop for ExternalDropGuard {
     }
 }
 
-impl Clone for ExternalDropGuard {
-    fn clone(&self) -> Self {
-        Self {
-            callback: Arc::clone(&self.callback),
-        }
-    }
-}
-
 impl core::fmt::Debug for ExternalDropGuard {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ExternalDropGuard").finish_non_exhaustive()
