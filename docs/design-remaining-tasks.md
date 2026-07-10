@@ -34,7 +34,7 @@
 
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
-| CFG-01 | 未开始 | GraphSpec 严格端口连通与基数校验 | 加载期拒绝缺失必需输入、同一输入多条入边和重复边；错误定位到具体 connection/port，而不是运行时失败 | 无 |
+| CFG-01 | 已完成 | GraphSpec 严格端口连通与基数校验 | 加载期拒绝缺失必需输入、同一输入多条入边和重复边；错误定位到具体 connection/port，而不是运行时失败 | 无 |
 | CFG-02 | 已完成 | `dg-media` 四个 element 参数 validator | `media_decode/encode/resize/osd` 拒绝未知字段、错误类型、零尺寸和非法 box/color；创建与校验复用同一解析逻辑 | 无 |
 | CFG-03 | 已完成 | `dg-stream` 四个 element 参数 validator | `rtsp_src/httpflv_src/rtmp_sink/webrtc_sink` 在加载期校验 URL、协议、队列、背压、track 和未知字段，不打开网络连接 | 无 |
 | CFG-04 | 已完成 | `dg-elements` 十个算法/并行 element 参数 validator | yolo、resnet、retinaface、bytetrack、ppocr、distributor、converger 全部使用 validator；非法阈值/尺寸/策略和未知字段在加载期报错 | 无 |
