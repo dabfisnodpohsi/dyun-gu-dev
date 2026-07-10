@@ -37,7 +37,7 @@
 | CFG-01 | 未开始 | GraphSpec 严格端口连通与基数校验 | 加载期拒绝缺失必需输入、同一输入多条入边和重复边；错误定位到具体 connection/port，而不是运行时失败 | 无 |
 | CFG-02 | 已完成 | `dg-media` 四个 element 参数 validator | `media_decode/encode/resize/osd` 拒绝未知字段、错误类型、零尺寸和非法 box/color；创建与校验复用同一解析逻辑 | 无 |
 | CFG-03 | 已完成 | `dg-stream` 四个 element 参数 validator | `rtsp_src/httpflv_src/rtmp_sink/webrtc_sink` 在加载期校验 URL、协议、队列、背压、track 和未知字段，不打开网络连接 | 无 |
-| CFG-04 | 未开始 | `dg-elements` 十个算法/并行 element 参数 validator | yolo、resnet、retinaface、bytetrack、ppocr、distributor、converger 全部使用 validator；非法阈值/尺寸/策略和未知字段在加载期报错 | 无 |
+| CFG-04 | 已完成 | `dg-elements` 十个算法/并行 element 参数 validator | yolo、resnet、retinaface、bytetrack、ppocr、distributor、converger 全部使用 validator；非法阈值/尺寸/策略和未知字段在加载期报错 | 无 |
 | CFG-05 | 未开始 | element 专属参数 JSON Schema 与用户导出入口 | registry 提供参数 schema；导出 schema 按 element kind 描述 required/type/enum；新增 `dg schema` 并测试所有注册项均有 schema | CFG-02、CFG-03、CFG-04 |
 | CFG-06 | 未开始 | GraphSpec `defaults` 合并 | 支持全局 device/precision/backend 默认值；node override 优先；与 template/variable/include 的优先级有测试和文档 | 无 |
 | CFG-07 | 未开始 | 对齐 §8.3 标准字段 | 支持或兼容 `type`/`edges`，并使设计文档中的规范示例可解析；保留现有 `kind`/`connections` 的兼容性 | CFG-06 |
