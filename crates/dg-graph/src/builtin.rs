@@ -36,13 +36,22 @@ const SINK_INPUT_PORT: PortSchema = PortSchema {
     name: "in",
     dtype: None,
 };
+const SOURCE_PARAM_FIELDS: &[&str] = &["count", "shape", "dtype", "format", "start"];
+const MOCK_INFERENCE_PARAM_FIELDS: &[&str] = &[
+    "shape",
+    "output_shape",
+    "dtype",
+    "output_dtype",
+    "echo_inputs",
+    "fill_value",
+];
 
 inventory::submit! {
     ElementDescriptor {
         kind: "input",
         input_ports: &[],
         output_ports: &[INPUT_OUTPUT_PORT],
-        validate: None,
+        validate: Some(validate_empty_params),
         create: create_input,
     }
 }
@@ -52,7 +61,7 @@ inventory::submit! {
         kind: "source",
         input_ports: &[],
         output_ports: &[SOURCE_OUTPUT_PORT],
-        validate: None,
+        validate: Some(validate_source),
         create: create_source,
     }
 }
@@ -62,7 +71,7 @@ inventory::submit! {
         kind: "mock_inference",
         input_ports: &[INFER_INPUT_PORT],
         output_ports: &[INFER_OUTPUT_PORT],
-        validate: None,
+        validate: Some(validate_mock_inference),
         create: create_mock_inference,
     }
 }
@@ -72,7 +81,7 @@ inventory::submit! {
         kind: "sink",
         input_ports: &[SINK_INPUT_PORT],
         output_ports: &[],
-        validate: None,
+        validate: Some(validate_empty_params),
         create: create_sink,
     }
 }
@@ -221,25 +230,36 @@ impl Element for SinkElement {
 }
 
 fn create_source(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let count = read_usize(params, "count", 1)?;
-    let shape = read_shape(params, "shape", &[1, 4])?;
-    let dtype = read_dtype(params, "dtype").unwrap_or(DataType::F32);
-    let format = read_format(params, "format").unwrap_or(DataFormat::NC);
-    let start = read_f32(params, "start", 0.0)?;
+    let element = parse_source(node)?;
     Ok(CreatedElement {
-        element: Box::new(SourceElement {
-            count,
-            shape,
-            dtype,
-            format,
-            start,
-        }),
+        element: Box::new(element),
         handle: ElementHandle::None,
     })
 }
 
-fn create_input(_node: &NodeSpec) -> Result<CreatedElement> {
+fn validate_source(node: &NodeSpec) -> Result<()> {
+    parse_source(node).map(|_| ())
+}
+
+fn parse_source(node: &NodeSpec) -> Result<SourceElement> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, SOURCE_PARAM_FIELDS)?;
+    let count = read_usize(params, "count", 1)?;
+    let shape = read_shape(params, "shape", &[1, 4])?;
+    let dtype = read_dtype(params, "dtype")?.unwrap_or(DataType::F32);
+    let format = read_format(params, "format")?.unwrap_or(DataFormat::NC);
+    let start = read_f32(params, "start", 0.0)?;
+    Ok(SourceElement {
+        count,
+        shape,
+        dtype,
+        format,
+        start,
+    })
+}
+
+fn create_input(node: &NodeSpec) -> Result<CreatedElement> {
+    validate_empty_params(node)?;
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     Ok(CreatedElement {
         element: Box::new(InputElement {
@@ -250,11 +270,35 @@ fn create_input(_node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn create_mock_inference(node: &NodeSpec) -> Result<CreatedElement> {
+    let config = parse_mock_inference(node)?;
+    let runtime = Runtime::new(config.option)?;
+    Ok(CreatedElement {
+        element: Box::new(MockInferenceElement {
+            runtime,
+            echo_inputs: config.echo_inputs,
+            fill_value: config.fill_value,
+        }),
+        handle: ElementHandle::None,
+    })
+}
+
+fn validate_mock_inference(node: &NodeSpec) -> Result<()> {
+    parse_mock_inference(node).map(|_| ())
+}
+
+struct MockInferenceConfig {
+    option: RuntimeOption,
+    echo_inputs: bool,
+    fill_value: u8,
+}
+
+fn parse_mock_inference(node: &NodeSpec) -> Result<MockInferenceConfig> {
     let params = params_object(node)?;
+    reject_unknown_fields(params, MOCK_INFERENCE_PARAM_FIELDS)?;
     let shape = read_shape(params, "shape", &[1, 4])?;
     let output_shape = read_shape(params, "output_shape", shape.dims())?;
-    let dtype = read_dtype(params, "dtype").unwrap_or(DataType::F32);
-    let output_dtype = read_dtype(params, "output_dtype").unwrap_or(dtype);
+    let dtype = read_dtype(params, "dtype")?.unwrap_or(DataType::F32);
+    let output_dtype = read_dtype(params, "output_dtype")?.unwrap_or(dtype);
     let echo_inputs = read_bool(params, "echo_inputs", true)?;
     let fill_value = read_u8(params, "fill_value", 0)?;
 
@@ -270,19 +314,15 @@ fn create_mock_inference(node: &NodeSpec) -> Result<CreatedElement> {
             fill_value,
         }),
     );
-    let runtime = Runtime::new(option)?;
-    Ok(CreatedElement {
-        element: Box::new(MockInferenceElement {
-            runtime,
-            echo_inputs,
-            fill_value,
-        }),
-        handle: ElementHandle::None,
+    Ok(MockInferenceConfig {
+        option,
+        echo_inputs,
+        fill_value,
     })
 }
 
 fn create_sink(node: &NodeSpec) -> Result<CreatedElement> {
-    let _ = params_object(node)?;
+    validate_empty_params(node)?;
     let collector = Arc::new(Mutex::new(SinkCollector::default()));
     Ok(CreatedElement {
         element: Box::new(SinkElement {
@@ -292,10 +332,32 @@ fn create_sink(node: &NodeSpec) -> Result<CreatedElement> {
     })
 }
 
+fn validate_empty_params(node: &NodeSpec) -> Result<()> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, &[])
+}
+
 fn params_object(node: &NodeSpec) -> Result<&Map<String, Value>> {
     node.params
         .as_object()
         .ok_or_else(|| Error::Config(format!("node {} params must be an object", node.name)))
+}
+
+fn reject_unknown_fields(params: &Map<String, Value>, allowed: &[&str]) -> Result<()> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            let message = if allowed.is_empty() {
+                format!("unknown field `{key}`; no parameters are supported")
+            } else {
+                format!(
+                    "unknown field `{key}`; expected one of {}",
+                    allowed.join(", ")
+                )
+            };
+            return Err(Error::Config(message));
+        }
+    }
+    Ok(())
 }
 
 fn read_usize(params: &Map<String, Value>, key: &str, default: usize) -> Result<usize> {
@@ -365,38 +427,46 @@ fn read_shape(params: &Map<String, Value>, key: &str, default: &[usize]) -> Resu
     }
 }
 
-fn read_dtype(params: &Map<String, Value>, key: &str) -> Option<DataType> {
-    params
-        .get(key)
-        .and_then(|value| value.as_str())
-        .and_then(|name| match name {
-            "f32" => Some(DataType::F32),
-            "f16" => Some(DataType::F16),
-            "bf16" => Some(DataType::BF16),
-            "u8" => Some(DataType::U8),
-            "i8" => Some(DataType::I8),
-            "u16" => Some(DataType::U16),
-            "i16" => Some(DataType::I16),
-            _ => None,
-        })
+fn read_dtype(params: &Map<String, Value>, key: &str) -> Result<Option<DataType>> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    let name = value
+        .as_str()
+        .ok_or_else(|| Error::Config(format!("field {key} must be a string")))?;
+    let dtype = match name {
+        "f32" => DataType::F32,
+        "f16" => DataType::F16,
+        "bf16" => DataType::BF16,
+        "u8" => DataType::U8,
+        "i8" => DataType::I8,
+        "u16" => DataType::U16,
+        "i16" => DataType::I16,
+        _ => return Err(Error::Config(format!("unsupported dtype: {name}"))),
+    };
+    Ok(Some(dtype))
 }
 
-fn read_format(params: &Map<String, Value>, key: &str) -> Option<DataFormat> {
-    params
-        .get(key)
-        .and_then(Value::as_str)
-        .and_then(|name| match name {
-            "auto" => Some(DataFormat::Auto),
-            "nchw" => Some(DataFormat::NCHW),
-            "nhwc" => Some(DataFormat::NHWC),
-            "nc" => Some(DataFormat::NC),
-            "n" => Some(DataFormat::N),
-            "nc4hw" => Some(DataFormat::NC4HW),
-            "nc8hw" => Some(DataFormat::NC8HW),
-            "ncdhw" => Some(DataFormat::NCDHW),
-            "oihw" => Some(DataFormat::OIHW),
-            _ => None,
-        })
+fn read_format(params: &Map<String, Value>, key: &str) -> Result<Option<DataFormat>> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    let name = value
+        .as_str()
+        .ok_or_else(|| Error::Config(format!("field {key} must be a string")))?;
+    let format = match name {
+        "auto" => DataFormat::Auto,
+        "nchw" => DataFormat::NCHW,
+        "nhwc" => DataFormat::NHWC,
+        "nc" => DataFormat::NC,
+        "n" => DataFormat::N,
+        "nc4hw" => DataFormat::NC4HW,
+        "nc8hw" => DataFormat::NC8HW,
+        "ncdhw" => DataFormat::NCDHW,
+        "oihw" => DataFormat::OIHW,
+        _ => return Err(Error::Config(format!("unsupported format: {name}"))),
+    };
+    Ok(Some(format))
 }
 
 fn filled_tensor(shape: Shape, dtype: DataType, format: DataFormat, value: f32) -> Result<Tensor> {
@@ -473,6 +543,7 @@ fn f32_to_exact_u8(value: f32) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{GraphFormat, GraphSpec};
     use serde_json::json;
 
     #[test]
@@ -505,5 +576,85 @@ mod tests {
         assert!(
             matches!(fractional, Err(Error::Config(message)) if message.contains("cannot be represented as u8"))
         );
+    }
+
+    #[test]
+    fn source_params_reject_unknown_fields_during_graph_load() {
+        let yaml = r#"
+apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: source
+    kind: source
+    params:
+      unexpected: true
+"#;
+        let err = GraphSpec::from_str_with_format(yaml, GraphFormat::Yaml)
+            .expect("parse")
+            .normalize_with_base_dir(None)
+            .expect_err("unknown source parameter is rejected");
+        let message = err.to_string();
+        assert!(message.contains("nodes[source].params"));
+        assert!(message.contains("unknown field `unexpected`"));
+    }
+
+    #[test]
+    fn source_params_reject_invalid_enum_values_during_graph_load() {
+        let yaml = r#"
+apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: source
+    kind: source
+    params:
+      dtype: float32
+"#;
+        let err = GraphSpec::from_str_with_format(yaml, GraphFormat::Yaml)
+            .expect("parse")
+            .normalize_with_base_dir(None)
+            .expect_err("unsupported dtype is rejected");
+        let message = err.to_string();
+        assert!(message.contains("nodes[source].params"));
+        assert!(message.contains("unsupported dtype: float32"));
+    }
+
+    #[test]
+    fn parameterless_elements_reject_params_during_graph_load() {
+        let yaml = r#"
+apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: input
+    kind: input
+    params:
+      capacity: 4
+"#;
+        let err = GraphSpec::from_str_with_format(yaml, GraphFormat::Yaml)
+            .expect("parse")
+            .normalize_with_base_dir(None)
+            .expect_err("input parameters are rejected");
+        let message = err.to_string();
+        assert!(message.contains("nodes[input].params"));
+        assert!(message.contains("no parameters are supported"));
+    }
+
+    #[test]
+    fn mock_inference_params_reject_invalid_types_during_graph_load() {
+        let yaml = r#"
+apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: infer
+    kind: mock_inference
+    params:
+      echo_inputs: [true]
+"#;
+        let err = GraphSpec::from_str_with_format(yaml, GraphFormat::Yaml)
+            .expect("parse")
+            .normalize_with_base_dir(None)
+            .expect_err("invalid boolean is rejected");
+        let message = err.to_string();
+        assert!(message.contains("nodes[infer].params"));
+        assert!(message.contains("field echo_inputs must be a boolean"));
     }
 }

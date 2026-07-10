@@ -405,8 +405,9 @@ M0–M6 的无硬件软件交付已落地：图执行支持 work-stealing Thread
 路径、能力校验和无硬件 mock/纯逻辑测试；GraphSpec 的通用 `inference` element
 通过后端 descriptor 解析专属参数，并可由 CLI feature 注册真实后端；加载阶段
 通过 element validator 完成 inference 参数、后端注册及精度/设备/部署能力
-preflight，不初始化模型或硬件；媒体、流、算法、C ABI、热更新、CLI、
-fuzz/benchmark、文档及四目标 CI/发布配置均已接入。
+preflight，不初始化模型或硬件；`source`、`input`、`mock_inference`、`sink`
+内置 element 同样在加载阶段拒绝未知字段、错误类型和非法枚举值；媒体、流、算法、
+C ABI、热更新、CLI、fuzz/benchmark、文档及四目标 CI/发布配置均已接入。
 
 硬件验收不在通用 CI 中伪造。以下交付仍需对应自托管 runner 或目标设备执行：
 RK3588 三核吞吐与零拷贝计数、TensorRT GPU 精度/吞吐、Sophon Host/SoC
