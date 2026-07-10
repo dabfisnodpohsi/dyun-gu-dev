@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use dg_graph::{Graph, GraphReport, GraphSpec};
+use dg_graph::{Graph, GraphDiff, GraphReport, GraphSpec};
 use tracing_subscriber::EnvFilter;
 
 use dg_elements as _;
@@ -37,6 +37,8 @@ pub enum Command {
         config: PathBuf,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        #[arg(long)]
+        watch: bool,
     },
     Validate {
         #[arg(long)]
@@ -58,7 +60,11 @@ pub enum OutputFormat {
 pub fn run(cli: Cli) -> Result<()> {
     init_logging(cli.verbose);
     match cli.command {
-        Command::Run { config, format } => run_graph(&config, format),
+        Command::Run {
+            config,
+            format,
+            watch,
+        } => run_graph_with_watch(&config, format, watch),
         Command::Validate { config } => validate_graph(&config),
         Command::ListElements => list_elements(),
         Command::Schema { kind } => schema(kind.as_deref()),
@@ -66,10 +72,26 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 pub fn run_graph(path: &Path, format: OutputFormat) -> Result<()> {
+    run_graph_with_watch(path, format, false)
+}
+
+fn run_graph_with_watch(path: &Path, format: OutputFormat, watch: bool) -> Result<()> {
     let spec = load_spec(path)?;
     let graph = Graph::new(spec).context("build graph")?;
     let report = graph.run().context("run graph")?;
-    print_report(&report, format)
+    print_report(&report, format)?;
+    if watch {
+        let _watch_handle = dg_graph::watch(path, move |result| match result {
+            Ok((_, diff)) if !diff.is_empty() => match render_diff(&diff, format) {
+                Ok(output) => println!("{output}"),
+                Err(error) => println!("failed to render graph reload diff: {error}"),
+            },
+            Ok(_) => {}
+            Err(error) => println!("{}", render_reload_rejected(&error.to_string())),
+        })?;
+        std::thread::park();
+    }
+    Ok(())
 }
 
 pub fn validate_graph(path: &Path) -> Result<()> {
@@ -128,6 +150,75 @@ fn print_report(report: &GraphReport, format: OutputFormat) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DiffSummary {
+    added_nodes: Vec<String>,
+    removed_nodes: Vec<String>,
+    updated_nodes: Vec<String>,
+    added_connections: Vec<String>,
+    removed_connections: Vec<String>,
+}
+
+fn diff_summary(diff: &GraphDiff) -> DiffSummary {
+    DiffSummary {
+        added_nodes: diff
+            .added_nodes
+            .iter()
+            .map(|node| node.name.clone())
+            .collect(),
+        removed_nodes: diff.removed_nodes.clone(),
+        updated_nodes: diff
+            .updated_nodes
+            .iter()
+            .map(|node| node.name.clone())
+            .collect(),
+        added_connections: diff.added_connections.clone(),
+        removed_connections: diff.removed_connections.clone(),
+    }
+}
+
+fn render_diff(diff: &GraphDiff, format: OutputFormat) -> Result<String> {
+    let summary = diff_summary(diff);
+    match format {
+        OutputFormat::Json => Ok(serde_json::to_string_pretty(&summary)?),
+        OutputFormat::Text => {
+            let mut lines = vec!["graph configuration reloaded".to_string()];
+            if !summary.added_nodes.is_empty() {
+                lines.push(format!("added nodes: {}", summary.added_nodes.join(", ")));
+            }
+            if !summary.removed_nodes.is_empty() {
+                lines.push(format!(
+                    "removed nodes: {}",
+                    summary.removed_nodes.join(", ")
+                ));
+            }
+            if !summary.updated_nodes.is_empty() {
+                lines.push(format!(
+                    "updated nodes: {}",
+                    summary.updated_nodes.join(", ")
+                ));
+            }
+            if !summary.added_connections.is_empty() {
+                lines.push(format!(
+                    "added connections: {}",
+                    summary.added_connections.join(", ")
+                ));
+            }
+            if !summary.removed_connections.is_empty() {
+                lines.push(format!(
+                    "removed connections: {}",
+                    summary.removed_connections.join(", ")
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+fn render_reload_rejected(error: &str) -> String {
+    format!("graph configuration reload REJECTED: {error}; previous configuration remains active")
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -190,7 +281,12 @@ fn init_logging(verbose: u8) {
 mod tests {
     use std::fs;
 
-    use super::{list_elements, run_graph, schema, validate_graph, Command, OutputFormat};
+    use dg_graph::{GraphDiff, NodeSpec};
+
+    use super::{
+        list_elements, render_diff, render_reload_rejected, run_graph, schema, validate_graph,
+        Command, OutputFormat,
+    };
 
     fn temp_config() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -252,6 +348,56 @@ connections:
         assert!(matches!(command, Command::Schema { .. }));
         let schema = dg_graph::element_params_schema("media_osd").expect("media OSD schema");
         assert_eq!(schema["properties"]["boxes"]["type"], "array");
+    }
+
+    #[test]
+    fn diff_rendering_supports_text_and_json() {
+        let diff = GraphDiff {
+            added_nodes: vec![NodeSpec {
+                name: "added".to_string(),
+                kind: "source".to_string(),
+                template: None,
+                params: serde_json::json!({}),
+            }],
+            removed_nodes: vec!["removed".to_string()],
+            updated_nodes: vec![NodeSpec {
+                name: "updated".to_string(),
+                kind: "sink".to_string(),
+                template: None,
+                params: serde_json::json!({}),
+            }],
+            added_connections: vec!["added.out -> updated.in".to_string()],
+            removed_connections: vec!["old.out -> removed.in".to_string()],
+        };
+
+        let text = render_diff(&diff, OutputFormat::Text).expect("render text diff");
+        assert!(text.contains("added nodes: added"));
+        assert!(text.contains("removed nodes: removed"));
+        assert!(text.contains("updated nodes: updated"));
+        assert!(text.contains("added connections: added.out -> updated.in"));
+        assert!(text.contains("removed connections: old.out -> removed.in"));
+
+        let json = render_diff(&diff, OutputFormat::Json).expect("render JSON diff");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse JSON diff");
+        assert_eq!(value["added_nodes"], serde_json::json!(["added"]));
+        assert_eq!(value["removed_nodes"], serde_json::json!(["removed"]));
+        assert_eq!(value["updated_nodes"], serde_json::json!(["updated"]));
+        assert_eq!(
+            value["added_connections"],
+            serde_json::json!(["added.out -> updated.in"])
+        );
+        assert_eq!(
+            value["removed_connections"],
+            serde_json::json!(["old.out -> removed.in"])
+        );
+    }
+
+    #[test]
+    fn invalid_reload_message_keeps_previous_configuration() {
+        let message = render_reload_rejected("invalid node parameters");
+        assert!(message.contains("REJECTED"));
+        assert!(message.contains("invalid node parameters"));
+        assert!(message.contains("previous configuration remains active"));
     }
 
     #[cfg(feature = "openvino")]
