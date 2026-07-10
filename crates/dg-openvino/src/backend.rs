@@ -228,6 +228,16 @@ impl InferBackend for OpenVINOBackend {
             output_infos.push(Self::tensor_info_from_port(&port)?);
         }
 
+        if let Some(requested_precision) = option.precision {
+            let supported = input_infos
+                .iter()
+                .chain(output_infos.iter())
+                .all(|info| info.dtype == requested_precision);
+            if !supported {
+                return Err(Error::UnsupportedPrecision(requested_precision));
+            }
+        }
+
         let mut compiled_model = compiled_model;
         let request = compiled_model
             .create_infer_request()
