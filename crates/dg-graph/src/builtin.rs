@@ -333,6 +333,9 @@ fn create_sink(node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn validate_empty_params(node: &NodeSpec) -> Result<()> {
+    if node.params.is_null() {
+        return Ok(());
+    }
     let params = params_object(node)?;
     reject_unknown_fields(params, &[])
 }
@@ -636,6 +639,23 @@ nodes:
         let message = err.to_string();
         assert!(message.contains("nodes[input].params"));
         assert!(message.contains("no parameters are supported"));
+    }
+
+    #[test]
+    fn parameterless_elements_allow_omitted_params() {
+        let yaml = r#"
+apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: input
+    kind: input
+  - name: sink
+    kind: sink
+"#;
+        GraphSpec::from_str_with_format(yaml, GraphFormat::Yaml)
+            .expect("parse")
+            .normalize_with_base_dir(None)
+            .expect("parameterless nodes allow omitted params");
     }
 
     #[test]
