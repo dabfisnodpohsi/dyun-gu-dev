@@ -10,7 +10,7 @@ use tracing::trace;
 
 use crate::{
     CreatedElement, Element, ElementDescriptor, ElementHandle, ElementIo, Error, NodeSpec,
-    PortSchema, Result,
+    ParamField, ParamType, PortSchema, Result,
 };
 
 const INPUT_PORT: PortSchema = PortSchema {
@@ -21,12 +21,70 @@ const OUTPUT_PORT: PortSchema = PortSchema {
     name: "out",
     dtype: None,
 };
+const PRECISION_VALUES: &[&str] = &[
+    "f4", "f8", "f16", "f32", "f64", "bf16", "u8", "i8", "u16", "i16", "i32", "i64",
+];
+const DEVICE_VALUES: &[&str] = &[
+    "cpu",
+    "intel_gpu",
+    "intel_npu",
+    "cuda",
+    "cuda_gpu",
+    "rknn",
+    "rknn_npu",
+    "sophon",
+    "sophon_tpu",
+];
+const DEPLOY_MODE_VALUES: &[&str] = &["host", "soc"];
+const INFERENCE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "backend",
+        ty: ParamType::Str,
+        required: true,
+    },
+    ParamField {
+        name: "model",
+        ty: ParamType::Str,
+        required: false,
+    },
+    ParamField {
+        name: "precision",
+        ty: ParamType::Enum(PRECISION_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "device",
+        ty: ParamType::Enum(DEVICE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "deploy_mode",
+        ty: ParamType::Enum(DEPLOY_MODE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "core_mask",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "reshape",
+        ty: ParamType::Array(&ParamType::Uint),
+        required: false,
+    },
+    ParamField {
+        name: "options",
+        ty: ParamType::Object,
+        required: false,
+    },
+];
 
 inventory::submit! {
     ElementDescriptor {
         kind: "inference",
         input_ports: &[INPUT_PORT],
         output_ports: &[OUTPUT_PORT],
+        params: INFERENCE_PARAMS,
         validate: Some(validate_inference),
         create: create_inference,
     }

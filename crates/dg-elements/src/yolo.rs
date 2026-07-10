@@ -1,6 +1,7 @@
 use dg_core::{DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc};
 use dg_graph::{
-    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, Packet, PortSchema, Result,
+    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, Packet, ParamField,
+    ParamType, PortSchema, Result,
 };
 
 use crate::math::{nms, resize_letterbox, sigmoid, Letterbox};
@@ -29,12 +30,52 @@ const POSTPROCESS_FIELDS: &[&str] = &[
     "confidence_threshold",
     "nms_threshold",
 ];
+const PREPROCESS_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "input_width",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "input_height",
+        ty: ParamType::Uint,
+        required: false,
+    },
+];
+const POSTPROCESS_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "input_width",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "input_height",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "class_count",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "confidence_threshold",
+        ty: ParamType::Float,
+        required: false,
+    },
+    ParamField {
+        name: "nms_threshold",
+        ty: ParamType::Float,
+        required: false,
+    },
+];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "yolo_preprocess",
         input_ports: &PRE_INPUT,
         output_ports: &PRE_OUTPUT,
+        params: PREPROCESS_PARAMS,
         validate: Some(validate_preprocess),
         create: create_preprocess,
     }
@@ -45,6 +86,7 @@ inventory::submit! {
         kind: "yolo_postprocess",
         input_ports: &POST_INPUT,
         output_ports: &POST_OUTPUT,
+        params: POSTPROCESS_PARAMS,
         validate: Some(validate_postprocess),
         create: create_postprocess,
     }

@@ -4,7 +4,8 @@
 //! core's submit/poll state machine. All media logic lives in [`crate::ops`].
 
 use dg_graph::{
-    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, PortSchema, Result,
+    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, ParamField, ParamType,
+    PortSchema, Result,
 };
 use serde_json::{Map, Value};
 use tracing::trace;
@@ -25,12 +26,60 @@ const DECODE_PARAM_FIELDS: &[&str] = &["width", "height", "channels"];
 const RESIZE_PARAM_FIELDS: &[&str] = &["width", "height"];
 const OSD_PARAM_FIELDS: &[&str] = &["boxes", "color", "thickness"];
 const OSD_BOX_FIELDS: &[&str] = &["x", "y", "width", "height"];
+const EMPTY_PARAMS: &[ParamField] = &[];
+const DECODE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "width",
+        ty: ParamType::Uint,
+        required: true,
+    },
+    ParamField {
+        name: "height",
+        ty: ParamType::Uint,
+        required: true,
+    },
+    ParamField {
+        name: "channels",
+        ty: ParamType::Uint,
+        required: false,
+    },
+];
+const RESIZE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "width",
+        ty: ParamType::Uint,
+        required: true,
+    },
+    ParamField {
+        name: "height",
+        ty: ParamType::Uint,
+        required: true,
+    },
+];
+const OSD_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "boxes",
+        ty: ParamType::Array(&ParamType::Object),
+        required: false,
+    },
+    ParamField {
+        name: "color",
+        ty: ParamType::Array(&ParamType::Uint),
+        required: false,
+    },
+    ParamField {
+        name: "thickness",
+        ty: ParamType::Uint,
+        required: false,
+    },
+];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "media_decode",
         input_ports: &MEDIA_INPUT,
         output_ports: &MEDIA_OUTPUT,
+        params: DECODE_PARAMS,
         validate: Some(validate_decode),
         create: create_decode,
     }
@@ -40,6 +89,7 @@ inventory::submit! {
         kind: "media_encode",
         input_ports: &MEDIA_INPUT,
         output_ports: &MEDIA_OUTPUT,
+        params: EMPTY_PARAMS,
         validate: Some(validate_empty_params),
         create: create_encode,
     }
@@ -49,6 +99,7 @@ inventory::submit! {
         kind: "media_resize",
         input_ports: &MEDIA_INPUT,
         output_ports: &MEDIA_OUTPUT,
+        params: RESIZE_PARAMS,
         validate: Some(validate_resize),
         create: create_resize,
     }
@@ -58,6 +109,7 @@ inventory::submit! {
         kind: "media_osd",
         input_ports: &MEDIA_INPUT,
         output_ports: &MEDIA_OUTPUT,
+        params: OSD_PARAMS,
         validate: Some(validate_osd),
         create: create_osd,
     }

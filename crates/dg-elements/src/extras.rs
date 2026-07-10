@@ -5,7 +5,8 @@ use dg_core::{
     Point, Shape, Tensor, TensorDesc, Track, TrackState,
 };
 use dg_graph::{
-    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, Packet, PortSchema, Result,
+    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, Packet, ParamField,
+    ParamType, PortSchema, Result,
 };
 
 use crate::math::{iou, resize_letterbox, softmax, top_k};
@@ -39,12 +40,108 @@ const RETINAFACE_FIELDS: &[&str] = &[
 const BYTETRACK_FIELDS: &[&str] = &["max_lost", "match_iou"];
 const PPOCR_DET_FIELDS: &[&str] = &["threshold"];
 const PPOCR_REC_FIELDS: &[&str] = &["alphabet", "blank_index"];
+const RESNET_PREPROCESS_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "input_width",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "input_height",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "mean",
+        ty: ParamType::Array(&ParamType::Float),
+        required: false,
+    },
+    ParamField {
+        name: "std",
+        ty: ParamType::Array(&ParamType::Float),
+        required: false,
+    },
+];
+const RESNET_POSTPROCESS_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "top_k",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "labels",
+        ty: ParamType::Array(&ParamType::Str),
+        required: false,
+    },
+];
+const RETINAFACE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "image_width",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "image_height",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "stride",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "confidence_threshold",
+        ty: ParamType::Float,
+        required: false,
+    },
+    ParamField {
+        name: "nms_threshold",
+        ty: ParamType::Float,
+        required: false,
+    },
+    ParamField {
+        name: "anchor_sizes",
+        ty: ParamType::Array(&ParamType::Float),
+        required: false,
+    },
+];
+const BYTETRACK_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "max_lost",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "match_iou",
+        ty: ParamType::Float,
+        required: false,
+    },
+];
+const PPOCR_DET_PARAMS: &[ParamField] = &[ParamField {
+    name: "threshold",
+    ty: ParamType::Float,
+    required: false,
+}];
+const PPOCR_REC_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "alphabet",
+        ty: ParamType::Str,
+        required: false,
+    },
+    ParamField {
+        name: "blank_index",
+        ty: ParamType::Uint,
+        required: false,
+    },
+];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "resnet_preprocess",
         input_ports: &ANY_INPUT,
         output_ports: &TENSOR_OUTPUT,
+        params: RESNET_PREPROCESS_PARAMS,
         validate: Some(validate_resnet_preprocess),
         create: create_resnet_preprocess,
     }
@@ -54,6 +151,7 @@ inventory::submit! {
         kind: "resnet_postprocess",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
+        params: RESNET_POSTPROCESS_PARAMS,
         validate: Some(validate_resnet_postprocess),
         create: create_resnet_postprocess,
     }
@@ -63,6 +161,7 @@ inventory::submit! {
         kind: "retinaface",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
+        params: RETINAFACE_PARAMS,
         validate: Some(validate_retinaface),
         create: create_retinaface,
     }
@@ -72,6 +171,7 @@ inventory::submit! {
         kind: "bytetrack",
         input_ports: &ANY_INPUT,
         output_ports: &RESULT_OUTPUT,
+        params: BYTETRACK_PARAMS,
         validate: Some(validate_bytetrack),
         create: create_bytetrack,
     }
@@ -81,6 +181,7 @@ inventory::submit! {
         kind: "ppocr_det",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
+        params: PPOCR_DET_PARAMS,
         validate: Some(validate_ppocr_det),
         create: create_ppocr_det,
     }
@@ -90,6 +191,7 @@ inventory::submit! {
         kind: "ppocr_rec",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
+        params: PPOCR_REC_PARAMS,
         validate: Some(validate_ppocr_rec),
         create: create_ppocr_rec,
     }

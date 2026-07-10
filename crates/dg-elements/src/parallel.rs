@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use dg_graph::{
-    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, PortSchema, Result,
+    CreatedElement, Element, ElementHandle, ElementIo, Error, NodeSpec, ParamField, ParamType,
+    PortSchema, Result,
 };
 
 const MAX_BRANCHES: usize = 8;
@@ -82,12 +83,20 @@ const SINGLE_OUTPUT: [PortSchema; 1] = [PortSchema {
     dtype: None,
 }];
 const DISTRIBUTOR_FIELDS: &[&str] = &["strategy"];
+const DISTRIBUTOR_STRATEGIES: &[&str] = &["round_robin", "broadcast"];
+const DISTRIBUTOR_PARAMS: &[ParamField] = &[ParamField {
+    name: "strategy",
+    ty: ParamType::Enum(DISTRIBUTOR_STRATEGIES),
+    required: false,
+}];
+const EMPTY_PARAMS: &[ParamField] = &[];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "distributor",
         input_ports: &[INPUT_PORT],
         output_ports: &OUTPUT_PORTS,
+        params: DISTRIBUTOR_PARAMS,
         validate: Some(validate_distributor),
         create: create_distributor,
     }
@@ -98,6 +107,7 @@ inventory::submit! {
         kind: "converger",
         input_ports: &INPUT_PORTS,
         output_ports: &SINGLE_OUTPUT,
+        params: EMPTY_PARAMS,
         validate: Some(validate_converger),
         create: create_converger,
     }

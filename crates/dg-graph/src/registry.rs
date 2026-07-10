@@ -1,11 +1,13 @@
 use crate::element::{CreatedElement, PortSchema};
 use crate::error::{Error, Result};
+use crate::schema::ParamField;
 use crate::spec::NodeSpec;
 
 pub struct ElementDescriptor {
     pub kind: &'static str,
     pub input_ports: &'static [PortSchema],
     pub output_ports: &'static [PortSchema],
+    pub params: &'static [ParamField],
     pub validate: Option<fn(&NodeSpec) -> Result<()>>,
     pub create: fn(&NodeSpec) -> Result<CreatedElement>,
 }

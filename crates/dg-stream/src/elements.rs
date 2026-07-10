@@ -13,7 +13,7 @@ use std::sync::Arc;
 use dg_core::DataType;
 use dg_graph::{
     CreatedElement, Element, ElementDescriptor, ElementHandle, ElementIo, NodeSpec, Packet,
-    PacketMeta, PortSchema,
+    PacketMeta, ParamField, ParamType, PortSchema,
 };
 use serde_json::{Map, Value};
 use tracing::debug;
@@ -64,12 +64,62 @@ const TRACK_FIELDS: &[&str] = &[
     "extradata",
     "readiness",
 ];
+const BACKPRESSURE_VALUES: &[&str] = &[
+    "drop_droppable_first",
+    "drop_until_next_keyframe",
+    "disconnect_on_overflow",
+];
+const PULL_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "url",
+        ty: ParamType::Str,
+        required: true,
+    },
+    ParamField {
+        name: "queue_capacity",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "backpressure",
+        ty: ParamType::Enum(BACKPRESSURE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "enable_video",
+        ty: ParamType::Bool,
+        required: false,
+    },
+    ParamField {
+        name: "enable_audio",
+        ty: ParamType::Bool,
+        required: false,
+    },
+];
+const PUSH_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "url",
+        ty: ParamType::Str,
+        required: true,
+    },
+    ParamField {
+        name: "announce_tracks",
+        ty: ParamType::Bool,
+        required: false,
+    },
+    ParamField {
+        name: "tracks",
+        ty: ParamType::Array(&ParamType::Object),
+        required: false,
+    },
+];
 
 inventory::submit! {
     ElementDescriptor {
         kind: "rtsp_src",
         input_ports: &[],
         output_ports: &[PULL_OUTPUT_PORT],
+        params: PULL_PARAMS,
         validate: Some(validate_rtsp_src),
         create: create_rtsp_src,
     }
@@ -80,6 +130,7 @@ inventory::submit! {
         kind: "httpflv_src",
         input_ports: &[],
         output_ports: &[PULL_OUTPUT_PORT],
+        params: PULL_PARAMS,
         validate: Some(validate_httpflv_src),
         create: create_httpflv_src,
     }
@@ -90,6 +141,7 @@ inventory::submit! {
         kind: "rtmp_sink",
         input_ports: &[PUSH_INPUT_PORT],
         output_ports: &[],
+        params: PUSH_PARAMS,
         validate: Some(validate_rtmp_sink),
         create: create_rtmp_sink,
     }
@@ -100,6 +152,7 @@ inventory::submit! {
         kind: "webrtc_sink",
         input_ports: &[PUSH_INPUT_PORT],
         output_ports: &[],
+        params: PUSH_PARAMS,
         validate: Some(validate_webrtc_sink),
         create: create_webrtc_sink,
     }

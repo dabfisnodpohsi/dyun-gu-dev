@@ -15,6 +15,7 @@ use crate::error::{Error, Result};
 use crate::packet::Packet;
 use crate::registry::ElementDescriptor;
 use crate::spec::NodeSpec;
+use crate::{ParamField, ParamType};
 
 const SOURCE_OUTPUT_PORT: PortSchema = PortSchema {
     name: "out",
@@ -45,12 +46,77 @@ const MOCK_INFERENCE_PARAM_FIELDS: &[&str] = &[
     "echo_inputs",
     "fill_value",
 ];
+const DTYPE_VALUES: &[&str] = &["f32", "f16", "bf16", "u8", "i8", "u16", "i16"];
+const FORMAT_VALUES: &[&str] = &[
+    "auto", "nchw", "nhwc", "nc", "n", "nc4hw", "nc8hw", "ncdhw", "oihw",
+];
+const EMPTY_PARAMS: &[ParamField] = &[];
+const SOURCE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "count",
+        ty: ParamType::Uint,
+        required: false,
+    },
+    ParamField {
+        name: "shape",
+        ty: ParamType::Array(&ParamType::Uint),
+        required: false,
+    },
+    ParamField {
+        name: "dtype",
+        ty: ParamType::Enum(DTYPE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "format",
+        ty: ParamType::Enum(FORMAT_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "start",
+        ty: ParamType::Float,
+        required: false,
+    },
+];
+const MOCK_INFERENCE_PARAMS: &[ParamField] = &[
+    ParamField {
+        name: "shape",
+        ty: ParamType::Array(&ParamType::Uint),
+        required: false,
+    },
+    ParamField {
+        name: "output_shape",
+        ty: ParamType::Array(&ParamType::Uint),
+        required: false,
+    },
+    ParamField {
+        name: "dtype",
+        ty: ParamType::Enum(DTYPE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "output_dtype",
+        ty: ParamType::Enum(DTYPE_VALUES),
+        required: false,
+    },
+    ParamField {
+        name: "echo_inputs",
+        ty: ParamType::Bool,
+        required: false,
+    },
+    ParamField {
+        name: "fill_value",
+        ty: ParamType::Uint,
+        required: false,
+    },
+];
 
 inventory::submit! {
     ElementDescriptor {
         kind: "input",
         input_ports: &[],
         output_ports: &[INPUT_OUTPUT_PORT],
+        params: EMPTY_PARAMS,
         validate: Some(validate_empty_params),
         create: create_input,
     }
@@ -61,6 +127,7 @@ inventory::submit! {
         kind: "source",
         input_ports: &[],
         output_ports: &[SOURCE_OUTPUT_PORT],
+        params: SOURCE_PARAMS,
         validate: Some(validate_source),
         create: create_source,
     }
@@ -71,6 +138,7 @@ inventory::submit! {
         kind: "mock_inference",
         input_ports: &[INFER_INPUT_PORT],
         output_ports: &[INFER_OUTPUT_PORT],
+        params: MOCK_INFERENCE_PARAMS,
         validate: Some(validate_mock_inference),
         create: create_mock_inference,
     }
@@ -81,6 +149,7 @@ inventory::submit! {
         kind: "sink",
         input_ports: &[SINK_INPUT_PORT],
         output_ports: &[],
+        params: EMPTY_PARAMS,
         validate: Some(validate_empty_params),
         create: create_sink,
     }

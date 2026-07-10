@@ -15,6 +15,7 @@ mod packet;
 mod pipe;
 mod pool;
 mod registry;
+mod schema;
 mod spec;
 
 pub use element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema, SinkCollector};
@@ -26,6 +27,9 @@ pub use pool::ThreadPool;
 pub use registry::{
     create_element, element_ports, find_element, registered_elements, validate_element,
     ElementDescriptor,
+};
+pub use schema::{
+    all_element_schemas, element_params_schema, params_json_schema, ParamField, ParamType,
 };
 pub use spec::{
     ConnectionSpec, ExecutionSpec, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec,
