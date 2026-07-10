@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -244,14 +244,43 @@ impl GraphSpec {
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
+        let mut resolving = BTreeSet::new();
+        Self::load_from_path_tracked(path.as_ref(), &mut resolving)
+    }
+
+    fn load_from_path_tracked(path: &Path, resolving: &mut BTreeSet<PathBuf>) -> Result<Self> {
+        let canonical_path = fs::canonicalize(path)?;
+        if !resolving.insert(canonical_path.clone()) {
+            return Err(Error::Validation {
+                path: "includes".to_string(),
+                message: format!("include cycle detected at {}", path.display()),
+            });
+        }
+        let result = Self::load_from_path_tracked_inner(path, resolving);
+        resolving.remove(&canonical_path);
+        result
+    }
+
+    fn load_from_path_tracked_inner(
+        path: &Path,
+        resolving: &mut BTreeSet<PathBuf>,
+    ) -> Result<Self> {
         let format = GraphFormat::from_path(path)?;
         let content = fs::read_to_string(path)?;
         let spec = Self::from_str_with_format(&content, format)?;
-        spec.normalize_with_base_dir(path.parent())
+        spec.normalize_with_base_dir_tracked(path.parent(), resolving)
     }
 
     pub fn normalize_with_base_dir(self, base_dir: Option<&Path>) -> Result<Self> {
+        let mut resolving = BTreeSet::new();
+        self.normalize_with_base_dir_tracked(base_dir, &mut resolving)
+    }
+
+    fn normalize_with_base_dir_tracked(
+        self,
+        base_dir: Option<&Path>,
+        resolving: &mut BTreeSet<PathBuf>,
+    ) -> Result<Self> {
         if !(self.api_version == "dg/v1" || self.api_version == "v1") {
             return Err(Error::Validation {
                 path: "apiVersion".to_string(),
@@ -264,12 +293,19 @@ impl GraphSpec {
                 message: format!("unsupported kind: {}", self.kind),
             });
         }
+        if base_dir.is_none() && !self.includes.is_empty() {
+            return Err(Error::Validation {
+                path: "includes".to_string(),
+                message: "includes require loading from a file path with a base directory"
+                    .to_string(),
+            });
+        }
 
         let mut merged = GraphSpec::default();
         if let Some(base_dir) = base_dir {
             for include in &self.includes {
                 let included_path = base_dir.join(include);
-                let included = GraphSpec::load_from_path(&included_path)?;
+                let included = GraphSpec::load_from_path_tracked(&included_path, resolving)?;
                 merged.merge_included(included);
             }
         }
@@ -284,10 +320,11 @@ impl GraphSpec {
                 _ => BTreeSet::new(),
             })
             .collect::<Vec<BTreeSet<String>>>();
-        merged.apply_templates();
+        merged.apply_templates()?;
         merged.apply_node_overrides(&explicit_param_keys);
         merged.apply_defaults();
         merged.apply_variables();
+        merged.validate_references()?;
         merged.validate()?;
         Ok(merged)
     }
@@ -306,15 +343,21 @@ impl GraphSpec {
         self.kind = other.kind;
     }
 
-    fn apply_templates(&mut self) {
+    fn apply_templates(&mut self) -> Result<()> {
         for node in &mut self.nodes {
             if let Some(template_name) = node.template.as_ref() {
-                if let Some(template) = self.templates.get(template_name) {
-                    node.kind = template.kind.clone();
-                    node.params = merge_values(template.params.clone(), node.params.clone());
-                }
+                let template =
+                    self.templates
+                        .get(template_name)
+                        .ok_or_else(|| Error::Validation {
+                            path: format!("nodes[{}].template", node.name),
+                            message: format!("unknown template `{template_name}`"),
+                        })?;
+                node.kind = template.kind.clone();
+                node.params = merge_values(template.params.clone(), node.params.clone());
             }
         }
+        Ok(())
     }
 
     fn apply_node_overrides(&mut self, explicit_param_keys: &[BTreeSet<String>]) {
@@ -395,6 +438,34 @@ impl GraphSpec {
             .iter()
             .map(|connection| substitute_string(connection, &self.variables))
             .collect();
+    }
+
+    fn validate_references(&self) -> Result<()> {
+        for node in &self.nodes {
+            if let Some(placeholder) = find_unresolved_placeholder(&node.params) {
+                return Err(Error::Validation {
+                    path: format!("nodes[{}].params", node.name),
+                    message: format!("unresolved variable placeholder `{placeholder}`"),
+                });
+            }
+        }
+        for (name, template) in &self.templates {
+            if let Some(placeholder) = find_unresolved_placeholder(&template.params) {
+                return Err(Error::Validation {
+                    path: format!("templates[{name}].params"),
+                    message: format!("unresolved variable placeholder `{placeholder}`"),
+                });
+            }
+        }
+        for (index, connection) in self.connections.iter().enumerate() {
+            if let Some(placeholder) = find_unresolved_placeholder_in_string(connection) {
+                return Err(Error::Validation {
+                    path: format!("connections[{index}]"),
+                    message: format!("unresolved variable placeholder `{placeholder}`"),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -637,6 +708,24 @@ fn substitute_string(value: &str, vars: &BTreeMap<String, Value>) -> String {
         out = out.replace(&needle, &replacement);
     }
     out
+}
+
+fn find_unresolved_placeholder(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => find_unresolved_placeholder_in_string(value),
+        Value::Array(values) => values.iter().find_map(find_unresolved_placeholder),
+        Value::Object(values) => values.values().find_map(find_unresolved_placeholder),
+        _ => None,
+    }
+}
+
+fn find_unresolved_placeholder_in_string(value: &str) -> Option<String> {
+    let start = value.find("${")?;
+    let remainder = &value[start + 2..];
+    let end = remainder
+        .find('}')
+        .map_or(value.len(), |end| start + 3 + end);
+    Some(value[start..end].to_string())
 }
 
 #[derive(Clone, Debug, Default)]
