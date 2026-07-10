@@ -148,14 +148,20 @@ enum DgStatus dg_engine_load_string(struct DgEngine *engine,
 enum DgStatus dg_engine_load_file(struct DgEngine *engine, const char *path);
 
 /**
- * Reloads a graph specification from a UTF-8 string and invalidates the built graph.
+ * Reloads a graph specification from a UTF-8 string.
+ *
+ * A built graph is updated in place and remains ready to run. Reload is rejected while inputs
+ * are pending so that queued data is never silently interpreted by a changed graph.
  */
 enum DgStatus dg_engine_reload_string(struct DgEngine *engine,
                                       enum DgGraphFormat format,
                                       const char *content);
 
 /**
- * Reloads a graph specification from a UTF-8 path and invalidates the built graph.
+ * Reloads a graph specification from a UTF-8 path.
+ *
+ * A built graph is updated in place and remains ready to run. Reload is rejected while inputs
+ * are pending so that queued data is never silently interpreted by a changed graph.
  */
 enum DgStatus dg_engine_reload_file(struct DgEngine *engine, const char *path);
 

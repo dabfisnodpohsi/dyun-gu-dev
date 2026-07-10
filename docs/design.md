@@ -398,6 +398,18 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
 
 **总周期**：约 **15–20 周**（后端矩阵与算法库可并行压缩）。跨平台交叉编译（x86_64/aarch64/Android/RISC-V）贯穿各里程碑，随对应后端落地在 CI 构建矩阵中逐步开启。
 
+### 当前实现状态
+
+M0–M6 的无硬件软件交付已落地：图执行支持 work-stealing ThreadPool、
+`ParallelType` 与可配置背压；RKNN/TensorRT/Sophon 具备 feature-gated 真实执行
+路径、能力校验和无硬件 mock/纯逻辑测试；媒体、流、算法、C ABI、热更新、CLI、
+fuzz/benchmark、文档及四目标 CI/发布配置均已接入。
+
+硬件验收不在通用 CI 中伪造。以下交付仍需对应自托管 runner 或目标设备执行：
+RK3588 三核吞吐与零拷贝计数、TensorRT GPU 精度/吞吐、Sophon Host/SoC
+实机推理、硬件编解码到推理/推流的端到端零拷贝对比。相关 feature 路径在无硬件
+环境中通过 stub SDK 类型检查，并在缺少 SDK/设备时返回明确能力错误。
+
 ---
 
 ## 12. CI / 测试策略

@@ -39,7 +39,7 @@ impl GraphDiff {
 
     pub fn apply(self, graph: &mut Graph) -> Result<()> {
         let new_spec = graph.spec.clone().merge_for_diff(self)?;
-        *graph = Graph::new(new_spec)?;
+        graph.reload(new_spec)?;
         Ok(())
     }
 }
