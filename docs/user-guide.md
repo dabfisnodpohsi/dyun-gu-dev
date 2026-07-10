@@ -51,8 +51,10 @@ connections:
 ```
 
 配置加载时会检查未知节点类型、重复节点、端口名称、悬空引用和 DAG 环；注册了
-validator 的 element 还会在加载阶段检查参数。通用 `inference` 会严格解析对应
-后端的 `options`，并 preflight 精度、设备和部署模式，但不会初始化模型或硬件。
+validator 的 element 还会在加载阶段检查参数。内置 `source`、`input`、
+`mock_inference`、`sink` 会拒绝未知字段、错误类型和非法枚举值；通用
+`inference` 会严格解析对应后端的 `options`，并 preflight 精度、设备和部署模式，
+但不会初始化模型或硬件。
 `includes`、`variables` 与 `templates` 可用于拆分和复用配置。
 
 执行策略在顶层 `execution` 配置：
