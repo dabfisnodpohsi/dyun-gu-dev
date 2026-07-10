@@ -7,9 +7,10 @@ use std::fs;
 
 use dg_core::{CpuDevice, DataFormat, DataType, Shape, Tensor};
 use dg_runtime::{
-    BackendDescriptor, BackendKind, BackendOptions, Error, InferBackend, ModelSource, Result,
-    RuntimeOption, TensorInfo, TensorRtOptions,
+    BackendConfig, BackendDescriptor, BackendKind, BackendOptions, Error, InferBackend,
+    ModelSource, Result, RuntimeOption, TensorInfo, TensorRtOptions,
 };
+use serde::Deserialize;
 use tracing::trace;
 
 use crate::convert::{
@@ -742,11 +743,47 @@ fn create_tensorrt_backend() -> Box<dyn InferBackend> {
     Box::new(TensorRtBackend::new())
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct TensorRtConfig {
+    device_id: Option<u32>,
+    workspace_size_mb: usize,
+    enable_fp16: bool,
+    enable_int8: bool,
+}
+
+impl Default for TensorRtConfig {
+    fn default() -> Self {
+        Self {
+            device_id: None,
+            workspace_size_mb: 1024,
+            enable_fp16: false,
+            enable_int8: false,
+        }
+    }
+}
+
+fn configure_tensorrt(config: BackendConfig) -> Result<RuntimeOption> {
+    let params: TensorRtConfig = config.parse_options("tensorrt")?;
+    let model_source = config.require_model_file("TensorRT")?;
+    Ok(config.into_runtime_option(
+        BackendKind::TensorRt,
+        model_source,
+        BackendOptions::TensorRt(TensorRtOptions {
+            device_id: params.device_id,
+            workspace_size_mb: params.workspace_size_mb,
+            enable_fp16: params.enable_fp16,
+            enable_int8: params.enable_int8,
+        }),
+    ))
+}
+
 inventory::submit! {
     BackendDescriptor {
         kind: BackendKind::TensorRt,
         name: "tensorrt",
         create: create_tensorrt_backend,
+        configure: configure_tensorrt,
     }
 }
 

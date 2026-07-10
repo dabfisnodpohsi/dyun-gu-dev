@@ -403,7 +403,8 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
 M0–M6 的无硬件软件交付已落地：图执行支持 work-stealing ThreadPool、
 `ParallelType` 与可配置背压；RKNN/TensorRT/Sophon 具备 feature-gated 真实执行
 路径、能力校验和无硬件 mock/纯逻辑测试；GraphSpec 的通用 `inference` element
-可通过 CLI feature 选择并注册真实后端；媒体、流、算法、C ABI、热更新、CLI、
+通过后端 descriptor 解析专属参数，并可由 CLI feature 注册真实后端；媒体、流、
+算法、C ABI、热更新、CLI、
 fuzz/benchmark、文档及四目标 CI/发布配置均已接入。
 
 硬件验收不在通用 CI 中伪造。以下交付仍需对应自托管 runner 或目标设备执行：

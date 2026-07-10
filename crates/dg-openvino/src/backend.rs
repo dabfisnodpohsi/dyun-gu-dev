@@ -2,12 +2,14 @@ use std::convert::TryFrom;
 
 use dg_core::{DataFormat, DataType, Shape, Tensor};
 use dg_runtime::{
-    supports_deployment, supports_device, supports_precision, BackendDescriptor, BackendKind,
-    BackendOptions, Error, InferBackend, ModelSource, Result, RuntimeOption, TensorInfo,
+    supports_deployment, supports_device, supports_precision, BackendConfig, BackendDescriptor,
+    BackendKind, BackendOptions, Error, InferBackend, ModelSource, Result, RuntimeOption,
+    TensorInfo,
 };
 use openvino::{
     Core, DeviceType, ElementType, InferRequest, Model, Node, PartialShape, Tensor as OvTensor,
 };
+use serde::Deserialize;
 use tracing::trace;
 
 pub use dg_runtime::OpenVINOOptions;
@@ -438,10 +440,37 @@ fn create_openvino_backend() -> Box<dyn InferBackend> {
     Box::new(OpenVINOBackend::new())
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct OpenVinoConfig {
+    device: String,
+}
+
+impl Default for OpenVinoConfig {
+    fn default() -> Self {
+        Self {
+            device: "CPU".to_string(),
+        }
+    }
+}
+
+fn configure_openvino(config: BackendConfig) -> Result<RuntimeOption> {
+    let params: OpenVinoConfig = config.parse_options("openvino")?;
+    let model_source = config.require_model_file("OpenVINO")?;
+    Ok(config.into_runtime_option(
+        BackendKind::OpenVINO,
+        model_source,
+        BackendOptions::OpenVINO(OpenVINOOptions {
+            device: params.device,
+        }),
+    ))
+}
+
 inventory::submit! {
     BackendDescriptor {
         kind: BackendKind::OpenVINO,
         name: "openvino",
         create: create_openvino_backend,
+        configure: configure_openvino,
     }
 }

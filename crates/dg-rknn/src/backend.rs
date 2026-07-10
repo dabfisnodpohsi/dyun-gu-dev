@@ -5,9 +5,11 @@ use std::ptr;
 
 use dg_core::{DataFormat, DataType, Shape, Tensor};
 use dg_runtime::{
-    supports_deployment, supports_device, supports_precision, BackendDescriptor, BackendKind,
-    BackendOptions, Error, InferBackend, Result, RknnOptions, RuntimeOption, TensorInfo,
+    supports_deployment, supports_device, supports_precision, BackendConfig, BackendDescriptor,
+    BackendKind, BackendOptions, Error, InferBackend, Result, RknnOptions, RuntimeOption,
+    TensorInfo,
 };
+use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
 use crate::io::{
@@ -584,11 +586,34 @@ fn create_rknn_backend() -> Box<dyn InferBackend> {
     Box::new(RknnBackend::new())
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RknnConfig {
+    enable_zero_copy: bool,
+    dynamic_shape: bool,
+}
+
+fn configure_rknn(config: BackendConfig) -> Result<RuntimeOption> {
+    let params: RknnConfig = config.parse_options("rknn")?;
+    let model_source = config.require_model_file("RKNN")?;
+    let core_mask = config.core_mask();
+    Ok(config.into_runtime_option(
+        BackendKind::Rknn,
+        model_source,
+        BackendOptions::Rknn(RknnOptions {
+            core_mask,
+            enable_zero_copy: params.enable_zero_copy,
+            dynamic_shape: params.dynamic_shape,
+        }),
+    ))
+}
+
 inventory::submit! {
     BackendDescriptor {
         kind: BackendKind::Rknn,
         name: "rknn",
         create: create_rknn_backend,
+        configure: configure_rknn,
     }
 }
 

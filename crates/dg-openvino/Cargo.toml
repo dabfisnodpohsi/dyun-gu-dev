@@ -15,5 +15,6 @@ dg-core = { path = "../dg-core" }
 dg-runtime = { path = "../dg-runtime" }
 inventory.workspace = true
 openvino = { workspace = true, optional = true, default-features = false }
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

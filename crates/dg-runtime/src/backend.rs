@@ -1,4 +1,4 @@
-use crate::{Error, Result, RuntimeOption, TensorInfo};
+use crate::{BackendConfig, Error, Result, RuntimeOption, TensorInfo};
 
 /// Backend families available to the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,6 +29,7 @@ pub struct BackendDescriptor {
     pub kind: BackendKind,
     pub name: &'static str,
     pub create: fn() -> Box<dyn InferBackend>,
+    pub configure: fn(BackendConfig) -> Result<RuntimeOption>,
 }
 
 /// Discover registered backends.
@@ -43,4 +44,13 @@ pub fn create_backend(kind: BackendKind) -> Result<Box<dyn InferBackend>> {
         .find(|descriptor| descriptor.kind == kind)
         .map(|descriptor| (descriptor.create)())
         .ok_or(Error::UnsupportedBackend(kind))
+}
+
+/// Build runtime options through the backend registered under `name`.
+pub fn configure_backend(name: &str, config: BackendConfig) -> Result<RuntimeOption> {
+    registered_backends()
+        .into_iter()
+        .find(|descriptor| descriptor.name == name)
+        .ok_or_else(|| Error::UnsupportedBackendName(name.to_string()))
+        .and_then(|descriptor| (descriptor.configure)(config))
 }

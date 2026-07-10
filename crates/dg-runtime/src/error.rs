@@ -13,6 +13,8 @@ pub enum Error {
     InvalidOption(String),
     #[error("unsupported backend: {0:?}")]
     UnsupportedBackend(crate::backend::BackendKind),
+    #[error("unsupported backend: {0}")]
+    UnsupportedBackendName(String),
     #[error("unsupported precision: {0:?}")]
     UnsupportedPrecision(dg_core::DataType),
     #[error("unsupported device: {0:?}")]

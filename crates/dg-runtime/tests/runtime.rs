@@ -3,8 +3,10 @@ use dg_core::{
     TensorDesc, TypeCode,
 };
 use dg_runtime::{
-    BackendKind, BackendOptions, MockOptions, ModelSource, Runtime, RuntimeOption, TensorInfo,
+    configure_backend, BackendConfig, BackendKind, BackendOptions, Error, MockOptions, ModelSource,
+    Runtime, RuntimeOption, TensorInfo,
 };
+use serde_json::json;
 
 #[test]
 fn mock_backend_registry_and_run_identity() {
@@ -95,6 +97,45 @@ fn unknown_backend_is_rejected() {
         .expect("backend should be missing");
     assert!(matches!(
         err,
-        dg_runtime::Error::UnsupportedBackend(BackendKind::OpenVINO)
+        Error::UnsupportedBackend(BackendKind::OpenVINO)
     ));
+}
+
+#[test]
+fn backend_registry_configures_mock_by_name() {
+    let config = BackendConfig::new(
+        None,
+        json!({
+            "shape": [1, 2],
+            "dtype": "u8",
+            "layout": "nc",
+            "echo_inputs": false,
+            "fill_value": 7
+        }),
+    )
+    .with_device(DeviceKind::Cpu);
+
+    let option = configure_backend("mock", config).expect("configure mock");
+    assert_eq!(option.backend, BackendKind::Mock);
+    assert_eq!(option.device, Some(DeviceKind::Cpu));
+    let options = option.backend_options.as_mock().expect("mock options");
+    assert_eq!(options.input_infos[0].shape.dims(), &[1, 2]);
+    assert_eq!(options.input_infos[0].dtype, DataType::U8);
+    assert!(!options.echo_inputs);
+    assert_eq!(options.fill_value, 7);
+}
+
+#[test]
+fn backend_registry_rejects_unknown_names_and_missing_models() {
+    let err = configure_backend("missing", BackendConfig::new(None, serde_json::Value::Null))
+        .expect_err("backend name should be rejected");
+    assert_eq!(err, Error::UnsupportedBackendName("missing".to_string()));
+
+    let err = BackendConfig::new(None, serde_json::Value::Null)
+        .require_model_file("TensorRT")
+        .expect_err("model path should be required");
+    assert_eq!(
+        err,
+        Error::InvalidOption("TensorRT requires a model file path".to_string())
+    );
 }

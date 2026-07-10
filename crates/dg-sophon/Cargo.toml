@@ -17,6 +17,7 @@ soc = ["backend"]
 dg-core = { path = "../dg-core" }
 dg-runtime = { path = "../dg-runtime" }
 inventory.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 libc = { workspace = true, optional = true }

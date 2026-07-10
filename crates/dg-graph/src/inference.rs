@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use dg_core::{DataFormat, DataType, DeployMode, DeviceKind, Shape, TypeCode};
-use dg_runtime::{
-    BackendKind, BackendOptions, MockOptions, ModelSource, OpenVINOOptions, RknnOptions, Runtime,
-    RuntimeOption, SophonOptions, TensorInfo, TensorRtOptions,
-};
-use serde::de::DeserializeOwned;
+use dg_core::{DataType, DeployMode, DeviceKind, Shape, TypeCode};
+use dg_runtime::{configure_backend, BackendConfig, Runtime};
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::trace;
@@ -83,29 +79,21 @@ fn create_inference(node: &NodeSpec) -> Result<CreatedElement> {
 fn create_inference_inner(value: Value) -> Result<CreatedElement> {
     let params: InferenceParams = serde_json::from_value(value)
         .map_err(|err| Error::Config(format!("invalid parameters: {err}")))?;
-    let backend = parse_backend(&params.backend)?;
-    let deploy_mode = params
-        .deploy_mode
-        .as_deref()
-        .map(parse_deploy_mode)
-        .transpose()?;
-    let backend_options =
-        build_backend_options(backend, &params.options, params.core_mask, deploy_mode)?;
-    let model_source = model_source(backend, params.model)?;
-    let mut option = RuntimeOption::new(backend, model_source, backend_options);
+    let mut config = BackendConfig::new(params.model, params.options);
     if let Some(precision) = params.precision.as_deref() {
-        option = option.with_precision(parse_dtype(precision)?);
+        config = config.with_precision(parse_dtype(precision)?);
     }
     if let Some(device) = params.device.as_deref() {
-        option = option.with_device(parse_device(device)?);
+        config = config.with_device(parse_device(device)?);
     }
-    if let Some(deploy_mode) = deploy_mode {
-        option = option.with_deploy_mode(deploy_mode);
+    if let Some(deploy_mode) = params.deploy_mode.as_deref() {
+        config = config.with_deploy_mode(parse_deploy_mode(deploy_mode)?);
     }
     if let Some(core_mask) = params.core_mask {
-        option = option.with_core_mask(core_mask);
+        config = config.with_core_mask(core_mask);
     }
 
+    let option = configure_backend(&params.backend, config)?;
     let mut runtime = Runtime::new(option)?;
     if runtime.input_count() != 1 {
         return Err(Error::Config(format!(
@@ -146,166 +134,6 @@ struct InferenceParams {
     options: Value,
 }
 
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct MockParams {
-    shape: Option<Vec<usize>>,
-    output_shape: Option<Vec<usize>>,
-    dtype: Option<String>,
-    output_dtype: Option<String>,
-    layout: Option<String>,
-    echo_inputs: Option<bool>,
-    fill_value: Option<u8>,
-}
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct OpenVinoParams {
-    device: String,
-}
-
-impl Default for OpenVinoParams {
-    fn default() -> Self {
-        Self {
-            device: "CPU".to_string(),
-        }
-    }
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RknnParams {
-    enable_zero_copy: bool,
-    dynamic_shape: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct TensorRtParams {
-    device_id: Option<u32>,
-    workspace_size_mb: usize,
-    enable_fp16: bool,
-    enable_int8: bool,
-}
-
-impl Default for TensorRtParams {
-    fn default() -> Self {
-        Self {
-            device_id: None,
-            workspace_size_mb: 1024,
-            enable_fp16: false,
-            enable_int8: false,
-        }
-    }
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SophonParams {
-    device_id: Option<u32>,
-}
-
-fn build_backend_options(
-    backend: BackendKind,
-    value: &Value,
-    core_mask: Option<u32>,
-    deploy_mode: Option<DeployMode>,
-) -> Result<BackendOptions> {
-    match backend {
-        BackendKind::Mock => {
-            let params: MockParams = parse_options(backend, value)?;
-            let shape = Shape::new(params.shape.unwrap_or_else(|| vec![1, 4]));
-            let output_shape =
-                Shape::new(params.output_shape.unwrap_or_else(|| shape.dims().to_vec()));
-            let dtype = params
-                .dtype
-                .as_deref()
-                .map(parse_dtype)
-                .transpose()?
-                .unwrap_or(DataType::F32);
-            let output_dtype = params
-                .output_dtype
-                .as_deref()
-                .map(parse_dtype)
-                .transpose()?
-                .unwrap_or(dtype);
-            let layout = params
-                .layout
-                .as_deref()
-                .map(parse_layout)
-                .transpose()?
-                .unwrap_or(DataFormat::NC);
-            Ok(BackendOptions::Mock(MockOptions {
-                input_infos: vec![TensorInfo::new(shape, dtype).with_layout(layout)],
-                output_infos: vec![TensorInfo::new(output_shape, output_dtype).with_layout(layout)],
-                echo_inputs: params.echo_inputs.unwrap_or(true),
-                fill_value: params.fill_value.unwrap_or(0),
-            }))
-        }
-        BackendKind::OpenVINO => {
-            let params: OpenVinoParams = parse_options(backend, value)?;
-            Ok(BackendOptions::OpenVINO(OpenVINOOptions {
-                device: params.device,
-            }))
-        }
-        BackendKind::Rknn => {
-            let params: RknnParams = parse_options(backend, value)?;
-            Ok(BackendOptions::Rknn(RknnOptions {
-                core_mask,
-                enable_zero_copy: params.enable_zero_copy,
-                dynamic_shape: params.dynamic_shape,
-            }))
-        }
-        BackendKind::TensorRt => {
-            let params: TensorRtParams = parse_options(backend, value)?;
-            Ok(BackendOptions::TensorRt(TensorRtOptions {
-                device_id: params.device_id,
-                workspace_size_mb: params.workspace_size_mb,
-                enable_fp16: params.enable_fp16,
-                enable_int8: params.enable_int8,
-            }))
-        }
-        BackendKind::Sophon => {
-            let params: SophonParams = parse_options(backend, value)?;
-            Ok(BackendOptions::Sophon(SophonOptions {
-                deploy_mode: deploy_mode.unwrap_or(DeployMode::Host),
-                device_id: params.device_id,
-                core_mask,
-            }))
-        }
-    }
-}
-
-fn parse_options<T: DeserializeOwned>(backend: BackendKind, value: &Value) -> Result<T> {
-    let value = if value.is_null() {
-        Value::Object(serde_json::Map::new())
-    } else {
-        value.clone()
-    };
-    serde_json::from_value(value)
-        .map_err(|err| Error::Config(format!("{backend:?} inference options: {err}")))
-}
-
-fn model_source(backend: BackendKind, model: Option<PathBuf>) -> Result<ModelSource> {
-    if backend == BackendKind::Mock {
-        return Ok(ModelSource::Bytes(Vec::new()));
-    }
-    model
-        .map(ModelSource::File)
-        .ok_or_else(|| Error::Config(format!("{backend:?} inference requires a model file path")))
-}
-
-fn parse_backend(value: &str) -> Result<BackendKind> {
-    match value {
-        "mock" => Ok(BackendKind::Mock),
-        "openvino" => Ok(BackendKind::OpenVINO),
-        "rknn" => Ok(BackendKind::Rknn),
-        "tensorrt" => Ok(BackendKind::TensorRt),
-        "sophon" => Ok(BackendKind::Sophon),
-        _ => Err(Error::Config(format!("unknown inference backend: {value}"))),
-    }
-}
-
 fn parse_dtype(value: &str) -> Result<DataType> {
     match value {
         "f4" => Ok(DataType::F4),
@@ -325,23 +153,6 @@ fn parse_dtype(value: &str) -> Result<DataType> {
         "i64" => Ok(DataType::new(TypeCode::Int, 64, 1)),
         _ => Err(Error::Config(format!(
             "unsupported inference precision: {value}"
-        ))),
-    }
-}
-
-fn parse_layout(value: &str) -> Result<DataFormat> {
-    match value {
-        "auto" => Ok(DataFormat::Auto),
-        "n" => Ok(DataFormat::N),
-        "nc" => Ok(DataFormat::NC),
-        "nchw" => Ok(DataFormat::NCHW),
-        "nhwc" => Ok(DataFormat::NHWC),
-        "nc4hw" => Ok(DataFormat::NC4HW),
-        "nc8hw" => Ok(DataFormat::NC8HW),
-        "ncdhw" => Ok(DataFormat::NCDHW),
-        "oihw" => Ok(DataFormat::OIHW),
-        _ => Err(Error::Config(format!(
-            "unsupported inference layout: {value}"
         ))),
     }
 }
@@ -411,7 +222,7 @@ connections:
     }
 
     #[test]
-    fn real_backend_requires_model_path_before_initialization() {
+    fn unknown_backend_is_rejected_with_node_context() {
         let yaml = r#"
 apiVersion: dg/v1
 kind: Graph
@@ -426,8 +237,10 @@ nodes:
             .normalize_with_base_dir(None)
             .expect("normalize");
         let graph = Graph::new(spec).expect("build");
-        let err = graph.run().expect_err("model is required");
-        assert!(err.to_string().contains("requires a model file path"));
+        let err = graph.run().expect_err("backend is not registered");
+        let message = err.to_string();
+        assert!(message.contains("element error in infer"));
+        assert!(message.contains("unsupported backend: tensorrt"));
     }
 
     #[test]
@@ -450,7 +263,7 @@ nodes:
         let graph = Graph::new(spec).expect("build");
         let err = graph.run().expect_err("unknown option is rejected");
         let message = err.to_string();
-        assert!(message.contains("node infer"));
+        assert!(message.contains("element error in infer"));
         assert!(message.contains("unknown field"));
     }
 }

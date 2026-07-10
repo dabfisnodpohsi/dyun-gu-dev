@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use dg_core::{DataType, DeployMode, DeviceKind};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
-use crate::mock::MockOptions;
+use crate::{mock::MockOptions, Error, Result};
 
 /// Model payload for backends that ingest files or bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +21,92 @@ pub enum BackendOptions {
     Rknn(RknnOptions),
     TensorRt(TensorRtOptions),
     Sophon(SophonOptions),
+}
+
+/// Common GraphSpec configuration delegated to a registered backend.
+#[derive(Clone, Debug)]
+pub struct BackendConfig {
+    model: Option<PathBuf>,
+    precision: Option<DataType>,
+    device: Option<DeviceKind>,
+    deploy_mode: Option<DeployMode>,
+    core_mask: Option<u32>,
+    options: Value,
+}
+
+impl BackendConfig {
+    pub fn new(model: Option<PathBuf>, options: Value) -> Self {
+        Self {
+            model,
+            precision: None,
+            device: None,
+            deploy_mode: None,
+            core_mask: None,
+            options,
+        }
+    }
+
+    pub fn with_precision(mut self, precision: DataType) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    pub fn with_device(mut self, device: DeviceKind) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    pub fn with_deploy_mode(mut self, deploy_mode: DeployMode) -> Self {
+        self.deploy_mode = Some(deploy_mode);
+        self
+    }
+
+    pub fn with_core_mask(mut self, core_mask: u32) -> Self {
+        self.core_mask = Some(core_mask);
+        self
+    }
+
+    pub fn deploy_mode(&self) -> Option<DeployMode> {
+        self.deploy_mode
+    }
+
+    pub fn core_mask(&self) -> Option<u32> {
+        self.core_mask
+    }
+
+    pub fn parse_options<T: DeserializeOwned>(&self, backend: &str) -> Result<T> {
+        let value = if self.options.is_null() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            self.options.clone()
+        };
+        serde_json::from_value(value)
+            .map_err(|err| Error::InvalidOption(format!("{backend} options: {err}")))
+    }
+
+    pub fn require_model_file(&self, backend: &str) -> Result<ModelSource> {
+        self.model
+            .clone()
+            .map(ModelSource::File)
+            .ok_or_else(|| Error::InvalidOption(format!("{backend} requires a model file path")))
+    }
+
+    pub fn into_runtime_option(
+        self,
+        backend: crate::backend::BackendKind,
+        model_source: ModelSource,
+        backend_options: BackendOptions,
+    ) -> RuntimeOption {
+        RuntimeOption {
+            backend,
+            model_source,
+            precision: self.precision,
+            device: self.device,
+            deploy_mode: self.deploy_mode,
+            core_mask: self.core_mask,
+            backend_options,
+        }
+    }
 }
 
 impl BackendOptions {

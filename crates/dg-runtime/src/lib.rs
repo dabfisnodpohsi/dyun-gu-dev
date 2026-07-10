@@ -14,7 +14,8 @@ mod runtime;
 mod tensor_info;
 
 pub use backend::{
-    create_backend, registered_backends, BackendDescriptor, BackendKind, InferBackend,
+    configure_backend, create_backend, registered_backends, BackendDescriptor, BackendKind,
+    InferBackend,
 };
 pub use capabilities::{
     backend_capabilities, supports_deployment, supports_device, supports_precision,
@@ -23,8 +24,8 @@ pub use capabilities::{
 pub use error::{Error, Result};
 pub use mock::MockOptions;
 pub use option::{
-    BackendOptions, ModelSource, OpenVINOOptions, RknnOptions, RuntimeOption, SophonOptions,
-    TensorRtOptions,
+    BackendConfig, BackendOptions, ModelSource, OpenVINOOptions, RknnOptions, RuntimeOption,
+    SophonOptions, TensorRtOptions,
 };
 pub use runtime::Runtime;
 pub use tensor_info::TensorInfo;

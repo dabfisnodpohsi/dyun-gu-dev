@@ -14,9 +14,10 @@ use std::ptr;
 
 use dg_core::{CpuDevice, Shape, Tensor};
 use dg_runtime::{
-    supports_precision, BackendDescriptor, BackendKind, BackendOptions, Error, InferBackend,
-    ModelSource, Result, RuntimeOption, SophonOptions, TensorInfo,
+    supports_precision, BackendConfig, BackendDescriptor, BackendKind, BackendOptions, Error,
+    InferBackend, ModelSource, Result, RuntimeOption, SophonOptions, TensorInfo,
 };
+use serde::Deserialize;
 use tracing::{debug, trace};
 
 use crate::convert::{self, SophonDataType};
@@ -540,10 +541,33 @@ fn create_sophon_backend() -> Box<dyn InferBackend> {
     Box::new(SophonBackend::new())
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SophonConfig {
+    device_id: Option<u32>,
+}
+
+fn configure_sophon(config: BackendConfig) -> Result<RuntimeOption> {
+    let params: SophonConfig = config.parse_options("sophon")?;
+    let model_source = config.require_model_file("Sophon")?;
+    let deploy_mode = config.deploy_mode().unwrap_or(dg_core::DeployMode::Host);
+    let core_mask = config.core_mask();
+    Ok(config.into_runtime_option(
+        BackendKind::Sophon,
+        model_source,
+        BackendOptions::Sophon(SophonOptions {
+            deploy_mode,
+            device_id: params.device_id,
+            core_mask,
+        }),
+    ))
+}
+
 inventory::submit! {
     BackendDescriptor {
         kind: BackendKind::Sophon,
         name: "sophon",
         create: create_sophon_backend,
+        configure: configure_sophon,
     }
 }
