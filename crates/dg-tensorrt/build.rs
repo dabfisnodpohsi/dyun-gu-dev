@@ -29,6 +29,7 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=cudart");
 
     let cuda_root = env::var_os("CUDA_ROOT").map(PathBuf::from);
+    let mut cuda_include = None;
     if let Some(cuda_root) = cuda_root {
         let cuda_lib = if cuda_root.join("lib64").exists() {
             cuda_root.join("lib64")
@@ -36,6 +37,10 @@ fn main() {
             cuda_root.join("lib")
         };
         println!("cargo:rustc-link-search=native={}", cuda_lib.display());
+        let include = cuda_root.join("include");
+        if include.exists() {
+            cuda_include = Some(include);
+        }
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -43,13 +48,48 @@ fn main() {
     let shim_hdr = out_dir.join("trt_shim.h");
     fs::write(
         &shim_hdr,
-        "#include <cstddef>\n#include <cstdint>\n#include \"NvInfer.h\"\nextern \"C\" {\nstruct trt_runtime_handle;\nstruct trt_engine_handle;\nstruct trt_context_handle;\ntrt_runtime_handle* trt_runtime_create();\nvoid trt_runtime_destroy(trt_runtime_handle*);\ntrt_engine_handle* trt_runtime_deserialize_engine(trt_runtime_handle*, const void*, size_t);\nvoid trt_engine_destroy(trt_engine_handle*);\ntrt_context_handle* trt_engine_create_context(trt_engine_handle*);\nvoid trt_context_destroy(trt_context_handle*);\nint trt_engine_num_io(trt_engine_handle*);\nconst char* trt_engine_io_name(trt_engine_handle*, int);\nint trt_engine_io_is_input(trt_engine_handle*, int);\nint trt_engine_io_rank(trt_engine_handle*, int);\nint trt_context_set_input_shape(trt_context_handle*, const char*, const int64_t*, size_t);\nint trt_context_set_tensor_address(trt_context_handle*, const char*, void*);\nint trt_context_enqueue(trt_context_handle*, void*);\n}\n",
+        concat!(
+            "#include <cstddef>\n",
+            "#include <cstdint>\n",
+            "extern \"C\" {\n",
+            "struct trt_runtime_handle;\n",
+            "struct trt_engine_handle;\n",
+            "struct trt_context_handle;\n",
+            "trt_runtime_handle* trt_runtime_create();\n",
+            "void trt_runtime_destroy(trt_runtime_handle*);\n",
+            "trt_engine_handle* trt_runtime_deserialize_engine(trt_runtime_handle*, const void*, size_t);\n",
+            "void trt_engine_destroy(trt_engine_handle*);\n",
+            "trt_context_handle* trt_engine_create_context(trt_engine_handle*);\n",
+            "void trt_context_destroy(trt_context_handle*);\n",
+            "int trt_engine_num_io(trt_engine_handle*);\n",
+            "const char* trt_engine_io_name(trt_engine_handle*, int);\n",
+            "int trt_engine_io_is_input(trt_engine_handle*, int);\n",
+            "int trt_engine_io_dtype(trt_engine_handle*, int);\n",
+            "int trt_engine_io_shape(trt_engine_handle*, int, int64_t*, size_t);\n",
+            "int trt_context_set_input_shape(trt_context_handle*, const char*, const int64_t*, size_t);\n",
+            "int trt_context_get_tensor_shape(trt_context_handle*, const char*, int64_t*, size_t);\n",
+            "int trt_context_set_tensor_address(trt_context_handle*, const char*, void*);\n",
+            "int trt_context_enqueue(trt_context_handle*, void*);\n",
+            "int trt_cuda_device_count();\n",
+            "int trt_cuda_set_device(int);\n",
+            "void* trt_cuda_stream_create();\n",
+            "void trt_cuda_stream_destroy(void*);\n",
+            "int trt_cuda_stream_synchronize(void*);\n",
+            "void* trt_cuda_malloc(size_t);\n",
+            "void trt_cuda_free(void*);\n",
+            "int trt_cuda_memcpy_h2d(void*, const void*, size_t);\n",
+            "int trt_cuda_memcpy_d2h(void*, const void*, size_t);\n",
+            "}\n",
+        ),
     )
     .expect("write shim header");
     fs::write(
         &shim_src,
         r#"
 #include "trt_shim.h"
+
+#include "NvInfer.h"
+#include <cuda_runtime_api.h>
 
 namespace {
 class Logger final : public nvinfer1::ILogger {
@@ -123,11 +163,23 @@ int trt_engine_io_is_input(trt_engine_handle* handle, int index) {
   return name && handle->ptr->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT;
 }
 
-int trt_engine_io_rank(trt_engine_handle* handle, int index) {
+int trt_engine_io_dtype(trt_engine_handle* handle, int index) {
   if (!handle || !handle->ptr) return -1;
   auto name = handle->ptr->getIOTensorName(index);
   if (!name) return -1;
-  return handle->ptr->getTensorShape(name).nbDims;
+  return static_cast<int>(handle->ptr->getTensorDataType(name));
+}
+
+int trt_engine_io_shape(trt_engine_handle* handle, int index, int64_t* dims, size_t max_rank) {
+  if (!handle || !handle->ptr || !dims) return -1;
+  auto name = handle->ptr->getIOTensorName(index);
+  if (!name) return -1;
+  auto shape = handle->ptr->getTensorShape(name);
+  if (shape.nbDims < 0 || static_cast<size_t>(shape.nbDims) > max_rank) return -1;
+  for (int i = 0; i < shape.nbDims; ++i) {
+    dims[i] = static_cast<int64_t>(shape.d[i]);
+  }
+  return shape.nbDims;
 }
 
 int trt_context_set_input_shape(trt_context_handle* handle, const char* name, const int64_t* dims, size_t rank) {
@@ -140,6 +192,16 @@ int trt_context_set_input_shape(trt_context_handle* handle, const char* name, co
   return handle->ptr->setInputShape(name, shape) ? 1 : 0;
 }
 
+int trt_context_get_tensor_shape(trt_context_handle* handle, const char* name, int64_t* dims, size_t max_rank) {
+  if (!handle || !handle->ptr || !name || !dims) return -1;
+  auto shape = handle->ptr->getTensorShape(name);
+  if (shape.nbDims < 0 || static_cast<size_t>(shape.nbDims) > max_rank) return -1;
+  for (int i = 0; i < shape.nbDims; ++i) {
+    dims[i] = static_cast<int64_t>(shape.d[i]);
+  }
+  return shape.nbDims;
+}
+
 int trt_context_set_tensor_address(trt_context_handle* handle, const char* name, void* ptr) {
   if (!handle || !handle->ptr || !name) return 0;
   return handle->ptr->setTensorAddress(name, ptr) ? 1 : 0;
@@ -147,19 +209,67 @@ int trt_context_set_tensor_address(trt_context_handle* handle, const char* name,
 
 int trt_context_enqueue(trt_context_handle* handle, void* stream) {
   if (!handle || !handle->ptr) return 0;
-  return handle->ptr->enqueueV3(stream) ? 1 : 0;
+  return handle->ptr->enqueueV3(static_cast<cudaStream_t>(stream)) ? 1 : 0;
+}
+
+int trt_cuda_device_count() {
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess) return -1;
+  return count;
+}
+
+int trt_cuda_set_device(int device) {
+  return cudaSetDevice(device) == cudaSuccess ? 1 : 0;
+}
+
+void* trt_cuda_stream_create() {
+  cudaStream_t stream = nullptr;
+  if (cudaStreamCreate(&stream) != cudaSuccess) return nullptr;
+  return static_cast<void*>(stream);
+}
+
+void trt_cuda_stream_destroy(void* stream) {
+  if (!stream) return;
+  cudaStreamDestroy(static_cast<cudaStream_t>(stream));
+}
+
+int trt_cuda_stream_synchronize(void* stream) {
+  return cudaStreamSynchronize(static_cast<cudaStream_t>(stream)) == cudaSuccess ? 1 : 0;
+}
+
+void* trt_cuda_malloc(size_t size) {
+  void* ptr = nullptr;
+  if (cudaMalloc(&ptr, size) != cudaSuccess) return nullptr;
+  return ptr;
+}
+
+void trt_cuda_free(void* ptr) {
+  if (!ptr) return;
+  cudaFree(ptr);
+}
+
+int trt_cuda_memcpy_h2d(void* dst, const void* src, size_t size) {
+  return cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice) == cudaSuccess ? 1 : 0;
+}
+
+int trt_cuda_memcpy_d2h(void* dst, const void* src, size_t size) {
+  return cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost) == cudaSuccess ? 1 : 0;
 }
 }
 "#,
     )
     .expect("write shim source");
 
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    build
         .cpp(true)
         .file(&shim_src)
         .include(&include_dir)
-        .flag_if_supported("-std=c++17")
-        .compile("dg_tensorrt_shim");
+        .flag_if_supported("-std=c++17");
+    if let Some(cuda_include) = cuda_include.as_ref() {
+        build.include(cuda_include);
+    }
+    build.compile("dg_tensorrt_shim");
 
     let bindings = bindgen::Builder::default()
         .header(shim_hdr.to_string_lossy().into_owned())
