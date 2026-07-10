@@ -7,8 +7,10 @@
 
 #[cfg(feature = "backend")]
 mod backend;
+mod io;
 
 pub use dg_runtime::RknnOptions;
+pub use io::{quantization_from_rknn, select_io_path, strides_from_w_stride, IoPath};
 
 #[cfg(feature = "backend")]
 pub use backend::{backend_enabled, RknnBackend};

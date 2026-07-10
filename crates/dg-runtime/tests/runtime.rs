@@ -1,4 +1,7 @@
-use dg_core::{DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc, TypeCode};
+use dg_core::{
+    DataFormat, DataType, DeviceKind, Quantization, QuantizationScheme, Shape, Strides, Tensor,
+    TensorDesc, TypeCode,
+};
 use dg_runtime::{
     BackendKind, BackendOptions, MockOptions, ModelSource, Runtime, RuntimeOption, TensorInfo,
 };
@@ -54,6 +57,29 @@ fn mock_backend_rejects_unsupported_precision() {
         .err()
         .expect("precision should be rejected");
     assert!(matches!(err, dg_runtime::Error::UnsupportedPrecision(_)));
+}
+
+#[test]
+fn tensor_info_carries_quantization_and_stride_metadata() {
+    let quant = Quantization {
+        scheme: QuantizationScheme::AffineAsymmetric,
+        scale: vec![0.5],
+        zero_point: vec![-3],
+        axis: None,
+    };
+    let strides = Strides::new([3 * 224 * 256, 224 * 256, 256, 1]);
+    let info = TensorInfo::new(Shape::new([1, 3, 224, 224]), DataType::I8)
+        .with_layout(DataFormat::NCHW)
+        .with_quantization(quant.clone())
+        .with_strides(strides.clone())
+        .with_size_with_stride(3 * 224 * 256);
+
+    assert!(info.is_quantized());
+    assert_eq!(info.size_with_stride, Some(3 * 224 * 256));
+
+    let desc = info.tensor_desc(DeviceKind::Cpu);
+    assert_eq!(desc.quantization(), &quant);
+    assert_eq!(desc.strides(), Some(&strides));
 }
 
 #[test]
