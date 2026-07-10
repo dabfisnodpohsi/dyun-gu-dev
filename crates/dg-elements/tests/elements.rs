@@ -6,6 +6,86 @@ use serde_json::json;
 
 use dg_elements as _;
 
+fn node(kind: &str, params: serde_json::Value) -> NodeSpec {
+    NodeSpec {
+        name: "algorithm".to_string(),
+        kind: kind.to_string(),
+        template: None,
+        params,
+    }
+}
+
+#[test]
+fn algorithm_element_parameters_are_validated_at_load_time() {
+    let invalid = [
+        (
+            "yolo_preprocess",
+            json!({"input_width": 640, "unknown": true}),
+            "unknown field `unknown`",
+        ),
+        (
+            "yolo_postprocess",
+            json!({"confidence_threshold": 1.1}),
+            "field confidence_threshold must be between 0 and 1",
+        ),
+        (
+            "resnet_preprocess",
+            json!({"std": [0.229, 0.0, 0.225]}),
+            "field std values must be greater than zero",
+        ),
+        (
+            "resnet_postprocess",
+            json!({"labels": ["valid", 2]}),
+            "field labels must contain strings",
+        ),
+        (
+            "retinaface",
+            json!({"stride": 0}),
+            "field stride must be non-zero",
+        ),
+        (
+            "bytetrack",
+            json!({"match_iou": 1.1}),
+            "field match_iou must be between 0 and 1",
+        ),
+        (
+            "ppocr_det",
+            json!({"threshold": -0.1}),
+            "field threshold must be between 0 and 1",
+        ),
+        (
+            "ppocr_rec",
+            json!({"alphabet": ""}),
+            "field alphabet must not be empty",
+        ),
+        (
+            "ppocr_rec",
+            json!({"alphabet": "ab", "blank_index": 3}),
+            "field blank_index must not exceed the alphabet length (2)",
+        ),
+        (
+            "distributor",
+            json!({"strategy": 1}),
+            "field strategy must be a string",
+        ),
+        (
+            "converger",
+            json!({"strategy": "round_robin"}),
+            "unknown field `strategy`",
+        ),
+    ];
+
+    for (kind, params, expected) in invalid {
+        let err = GraphSpecBuilder::new()
+            .add_node(node(kind, params))
+            .build()
+            .expect_err("invalid algorithm params must fail during graph loading");
+        let message = err.to_string();
+        assert!(message.contains("nodes[algorithm].params"), "{message}");
+        assert!(message.contains(expected), "{message}");
+    }
+}
+
 #[test]
 fn yolo_pipeline_emits_nms_filtered_detections() {
     let spec = GraphSpecBuilder::new()

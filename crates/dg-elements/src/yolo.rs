@@ -21,13 +21,21 @@ const POST_OUTPUT: [PortSchema; 1] = [PortSchema {
     name: "out",
     dtype: None,
 }];
+const PREPROCESS_FIELDS: &[&str] = &["input_width", "input_height"];
+const POSTPROCESS_FIELDS: &[&str] = &[
+    "input_width",
+    "input_height",
+    "class_count",
+    "confidence_threshold",
+    "nms_threshold",
+];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "yolo_preprocess",
         input_ports: &PRE_INPUT,
         output_ports: &PRE_OUTPUT,
-        validate: None,
+        validate: Some(validate_preprocess),
         create: create_preprocess,
     }
 }
@@ -37,7 +45,7 @@ inventory::submit! {
         kind: "yolo_postprocess",
         input_ports: &POST_INPUT,
         output_ports: &POST_OUTPUT,
-        validate: None,
+        validate: Some(validate_postprocess),
         create: create_postprocess,
     }
 }
@@ -125,9 +133,7 @@ impl Element for Postprocess {
 }
 
 fn create_preprocess(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let target_width = read_usize(params, "input_width", 640)?;
-    let target_height = read_usize(params, "input_height", target_width)?;
+    let (target_width, target_height) = parse_preprocess(node)?;
     Ok(CreatedElement {
         element: Box::new(Preprocess {
             target_width,
@@ -138,24 +144,52 @@ fn create_preprocess(node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn create_postprocess(node: &NodeSpec) -> Result<CreatedElement> {
+    let config = parse_postprocess(node)?;
+    Ok(CreatedElement {
+        element: Box::new(config),
+        handle: ElementHandle::None,
+    })
+}
+
+fn validate_preprocess(node: &NodeSpec) -> Result<()> {
+    parse_preprocess(node).map(|_| ())
+}
+
+fn validate_postprocess(node: &NodeSpec) -> Result<()> {
+    parse_postprocess(node).map(|_| ())
+}
+
+fn parse_preprocess(node: &NodeSpec) -> Result<(usize, usize)> {
     let params = params_object(node)?;
+    reject_unknown_fields(params, PREPROCESS_FIELDS)?;
+    let target_width = read_nonzero_usize(params, "input_width", 640)?;
+    let target_height = read_nonzero_usize(params, "input_height", target_width)?;
+    target_width
+        .checked_mul(target_height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| Error::Config("yolo input dimensions overflow".to_string()))?;
+    Ok((target_width, target_height))
+}
+
+fn parse_postprocess(node: &NodeSpec) -> Result<Postprocess> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, POSTPROCESS_FIELDS)?;
     let input_width = read_usize(params, "input_width", 640)?;
     let input_height = read_usize(params, "input_height", input_width)?;
-    let class_count = read_usize(params, "class_count", 1)?;
-    let confidence_threshold = read_f32(params, "confidence_threshold", 0.25)?;
-    let nms_threshold = read_f32(params, "nms_threshold", 0.45)?;
-    if class_count == 0 {
-        return Err(Error::Config("class_count must be non-zero".to_string()));
-    }
-    Ok(CreatedElement {
-        element: Box::new(Postprocess {
-            target_width: usize_to_f32(input_width, "input_width")?,
-            target_height: usize_to_f32(input_height, "input_height")?,
-            class_count,
-            confidence_threshold,
-            nms_threshold,
-        }),
-        handle: ElementHandle::None,
+    ensure_nonzero(input_width, "input_width")?;
+    ensure_nonzero(input_height, "input_height")?;
+    let class_count = read_nonzero_usize(params, "class_count", 1)?;
+    class_count
+        .checked_add(5)
+        .ok_or_else(|| Error::Config("class_count is too large".to_string()))?;
+    let confidence_threshold = read_probability(params, "confidence_threshold", 0.25)?;
+    let nms_threshold = read_probability(params, "nms_threshold", 0.45)?;
+    Ok(Postprocess {
+        target_width: usize_to_f32(input_width, "input_width")?,
+        target_height: usize_to_f32(input_height, "input_height")?,
+        class_count,
+        confidence_threshold,
+        nms_threshold,
     })
 }
 
@@ -337,6 +371,21 @@ fn params_object(node: &NodeSpec) -> Result<&serde_json::Map<String, serde_json:
         .ok_or_else(|| Error::Config(format!("node {} params must be an object", node.name)))
 }
 
+fn reject_unknown_fields(
+    params: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+) -> Result<()> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(Error::Config(format!(
+                "unknown field `{key}`; expected one of {}",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn read_usize(
     params: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -370,6 +419,36 @@ fn read_f32(
         }
         Ok(narrowed)
     })
+}
+
+fn read_nonzero_usize(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: usize,
+) -> Result<usize> {
+    let value = read_usize(params, key, default)?;
+    ensure_nonzero(value, key)
+}
+
+fn ensure_nonzero(value: usize, key: &str) -> Result<usize> {
+    if value == 0 {
+        return Err(Error::Config(format!("field {key} must be non-zero")));
+    }
+    Ok(value)
+}
+
+fn read_probability(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: f32,
+) -> Result<f32> {
+    let value = read_f32(params, key, default)?;
+    if !(0.0..=1.0).contains(&value) {
+        return Err(Error::Config(format!(
+            "field {key} must be between 0 and 1"
+        )));
+    }
+    Ok(value)
 }
 
 fn read_tag(meta: &dg_graph::PacketMeta, key: &str) -> Result<f32> {

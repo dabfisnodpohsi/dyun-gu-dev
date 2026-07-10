@@ -26,13 +26,26 @@ const RESULT_OUTPUT: [PortSchema; 1] = [PortSchema {
     name: "out",
     dtype: None,
 }];
+const RESNET_PREPROCESS_FIELDS: &[&str] = &["input_width", "input_height", "mean", "std"];
+const RESNET_POSTPROCESS_FIELDS: &[&str] = &["top_k", "labels"];
+const RETINAFACE_FIELDS: &[&str] = &[
+    "image_width",
+    "image_height",
+    "stride",
+    "confidence_threshold",
+    "nms_threshold",
+    "anchor_sizes",
+];
+const BYTETRACK_FIELDS: &[&str] = &["max_lost", "match_iou"];
+const PPOCR_DET_FIELDS: &[&str] = &["threshold"];
+const PPOCR_REC_FIELDS: &[&str] = &["alphabet", "blank_index"];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "resnet_preprocess",
         input_ports: &ANY_INPUT,
         output_ports: &TENSOR_OUTPUT,
-        validate: None,
+        validate: Some(validate_resnet_preprocess),
         create: create_resnet_preprocess,
     }
 }
@@ -41,7 +54,7 @@ inventory::submit! {
         kind: "resnet_postprocess",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
-        validate: None,
+        validate: Some(validate_resnet_postprocess),
         create: create_resnet_postprocess,
     }
 }
@@ -50,7 +63,7 @@ inventory::submit! {
         kind: "retinaface",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
-        validate: None,
+        validate: Some(validate_retinaface),
         create: create_retinaface,
     }
 }
@@ -59,7 +72,7 @@ inventory::submit! {
         kind: "bytetrack",
         input_ports: &ANY_INPUT,
         output_ports: &RESULT_OUTPUT,
-        validate: None,
+        validate: Some(validate_bytetrack),
         create: create_bytetrack,
     }
 }
@@ -68,7 +81,7 @@ inventory::submit! {
         kind: "ppocr_det",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
-        validate: None,
+        validate: Some(validate_ppocr_det),
         create: create_ppocr_det,
     }
 }
@@ -77,7 +90,7 @@ inventory::submit! {
         kind: "ppocr_rec",
         input_ports: &TENSOR_INPUT,
         output_ports: &RESULT_OUTPUT,
-        validate: None,
+        validate: Some(validate_ppocr_rec),
         create: create_ppocr_rec,
     }
 }
@@ -418,8 +431,9 @@ pub fn ctc_greedy_decode(rows: &[Vec<f32>], alphabet: &[char], blank: usize) -> 
             .map(|(index, _)| index)
             .ok_or_else(|| Error::Runtime("empty CTC row".to_string()))?;
         if index != blank && Some(index) != previous {
+            let alphabet_index = if index < blank { index } else { index - 1 };
             let character = alphabet
-                .get(index)
+                .get(alphabet_index)
                 .ok_or_else(|| Error::Runtime("CTC class exceeds alphabet".to_string()))?;
             output.push(*character);
         }
@@ -569,64 +583,28 @@ fn resnet_preprocess_tensor(
 }
 
 fn create_resnet_preprocess(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let width = read_usize(params, "input_width", 224)?;
-    let height = read_usize(params, "input_height", width)?;
-    let mean = read_f32_array(params, "mean", [0.485, 0.456, 0.406])?;
-    let std = read_f32_array(params, "std", [0.229, 0.224, 0.225])?;
     Ok(CreatedElement {
-        element: Box::new(ResnetPreprocess {
-            width,
-            height,
-            mean,
-            std,
-        }),
+        element: Box::new(parse_resnet_preprocess(node)?),
         handle: ElementHandle::None,
     })
 }
 
 fn create_resnet_postprocess(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let top_k_value = read_usize(params, "top_k", 5)?;
-    let labels = params
-        .get("labels")
-        .and_then(serde_json::Value::as_array)
-        .map_or_else(Vec::new, |values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        });
     Ok(CreatedElement {
-        element: Box::new(ResnetPostprocess {
-            top_k: top_k_value,
-            labels,
-        }),
+        element: Box::new(parse_resnet_postprocess(node)?),
         handle: ElementHandle::None,
     })
 }
 
 fn create_retinaface(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let width = read_usize(params, "image_width", 640)?;
-    let height = read_usize(params, "image_height", width)?;
-    let stride = read_usize(params, "stride", 16)?;
-    let score_threshold = read_f32(params, "confidence_threshold", 0.5)?;
-    let nms_threshold = read_f32(params, "nms_threshold", 0.4)?;
-    let sizes = read_f32_vec(params, "anchor_sizes")?;
-    let sizes = if sizes.is_empty() {
-        vec![0.1, 0.2]
-    } else {
-        sizes
-    };
-    let anchors = generate_anchors(width, height, stride, &sizes);
+    let config = parse_retinaface(node)?;
+    let anchors = generate_anchors(config.width, config.height, config.stride, &config.sizes);
     Ok(CreatedElement {
         element: Box::new(Retinaface {
-            width,
-            height,
-            score_threshold,
-            nms_threshold,
+            width: config.width,
+            height: config.height,
+            score_threshold: config.score_threshold,
+            nms_threshold: config.nms_threshold,
             anchors,
         }),
         handle: ElementHandle::None,
@@ -634,14 +612,12 @@ fn create_retinaface(node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn create_bytetrack(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
+    let (max_lost, match_threshold) = parse_bytetrack(node)?;
     Ok(CreatedElement {
         element: Box::new(ByteTrack {
             next_id: 1,
-            max_lost: read_usize(params, "max_lost", 2)?
-                .try_into()
-                .map_err(|_| Error::Config("max_lost is out of range".to_string()))?,
-            match_threshold: read_f32(params, "match_iou", 0.3)?,
+            max_lost,
+            match_threshold,
             tracks: Vec::new(),
         }),
         handle: ElementHandle::None,
@@ -649,29 +625,161 @@ fn create_bytetrack(node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn create_ppocr_det(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
     Ok(CreatedElement {
         element: Box::new(PpocrDet {
-            threshold: read_f32(params, "threshold", 0.3)?,
+            threshold: parse_ppocr_det(node)?,
         }),
         handle: ElementHandle::None,
     })
 }
 
 fn create_ppocr_rec(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let alphabet: Vec<char> = params
-        .get("alphabet")
-        .and_then(serde_json::Value::as_str)
-        .map_or_else(
-            || "0123456789".chars().collect(),
-            |value| value.chars().collect(),
-        );
-    let blank = read_usize(params, "blank_index", alphabet.len())?;
+    let (alphabet, blank) = parse_ppocr_rec(node)?;
     Ok(CreatedElement {
         element: Box::new(PpocrRec { alphabet, blank }),
         handle: ElementHandle::None,
     })
+}
+
+fn validate_resnet_preprocess(node: &NodeSpec) -> Result<()> {
+    parse_resnet_preprocess(node).map(|_| ())
+}
+
+fn validate_resnet_postprocess(node: &NodeSpec) -> Result<()> {
+    parse_resnet_postprocess(node).map(|_| ())
+}
+
+fn validate_retinaface(node: &NodeSpec) -> Result<()> {
+    parse_retinaface(node).map(|_| ())
+}
+
+fn validate_bytetrack(node: &NodeSpec) -> Result<()> {
+    parse_bytetrack(node).map(|_| ())
+}
+
+fn validate_ppocr_det(node: &NodeSpec) -> Result<()> {
+    parse_ppocr_det(node).map(|_| ())
+}
+
+fn validate_ppocr_rec(node: &NodeSpec) -> Result<()> {
+    parse_ppocr_rec(node).map(|_| ())
+}
+
+fn parse_resnet_preprocess(node: &NodeSpec) -> Result<ResnetPreprocess> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, RESNET_PREPROCESS_FIELDS)?;
+    let width = read_nonzero_usize(params, "input_width", 224)?;
+    let height = read_nonzero_usize(params, "input_height", width)?;
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| Error::Config("resnet input dimensions overflow".to_string()))?;
+    let mean = read_f32_array(params, "mean", [0.485, 0.456, 0.406])?;
+    let std = read_f32_array(params, "std", [0.229, 0.224, 0.225])?;
+    if std.iter().any(|value| *value <= 0.0) {
+        return Err(Error::Config(
+            "field std values must be greater than zero".to_string(),
+        ));
+    }
+    Ok(ResnetPreprocess {
+        width,
+        height,
+        mean,
+        std,
+    })
+}
+
+fn parse_resnet_postprocess(node: &NodeSpec) -> Result<ResnetPostprocess> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, RESNET_POSTPROCESS_FIELDS)?;
+    let top_k = read_nonzero_usize(params, "top_k", 5)?;
+    let labels = read_string_vec(params, "labels")?;
+    Ok(ResnetPostprocess { top_k, labels })
+}
+
+struct RetinafaceConfig {
+    width: usize,
+    height: usize,
+    stride: usize,
+    score_threshold: f32,
+    nms_threshold: f32,
+    sizes: Vec<f32>,
+}
+
+fn parse_retinaface(node: &NodeSpec) -> Result<RetinafaceConfig> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, RETINAFACE_FIELDS)?;
+    let width = read_nonzero_usize(params, "image_width", 640)?;
+    let height = read_nonzero_usize(params, "image_height", width)?;
+    let stride = read_nonzero_usize(params, "stride", 16)?;
+    let score_threshold = read_probability(params, "confidence_threshold", 0.5)?;
+    let nms_threshold = read_probability(params, "nms_threshold", 0.4)?;
+    let sizes = read_f32_vec(params, "anchor_sizes")?;
+    let sizes = if sizes.is_empty() {
+        vec![0.1, 0.2]
+    } else {
+        sizes
+    };
+    if sizes.iter().any(|size| *size <= 0.0) {
+        return Err(Error::Config(
+            "field anchor_sizes values must be greater than zero".to_string(),
+        ));
+    }
+    width
+        .div_ceil(stride)
+        .checked_mul(height.div_ceil(stride))
+        .and_then(|cells| cells.checked_mul(sizes.len()))
+        .ok_or_else(|| Error::Config("retinaface anchor count overflow".to_string()))?;
+    Ok(RetinafaceConfig {
+        width,
+        height,
+        stride,
+        score_threshold,
+        nms_threshold,
+        sizes,
+    })
+}
+
+fn parse_bytetrack(node: &NodeSpec) -> Result<(u32, f32)> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, BYTETRACK_FIELDS)?;
+    let max_lost = read_usize(params, "max_lost", 2)?
+        .try_into()
+        .map_err(|_| Error::Config("max_lost is out of range".to_string()))?;
+    let match_threshold = read_probability(params, "match_iou", 0.3)?;
+    Ok((max_lost, match_threshold))
+}
+
+fn parse_ppocr_det(node: &NodeSpec) -> Result<f32> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, PPOCR_DET_FIELDS)?;
+    read_probability(params, "threshold", 0.3)
+}
+
+fn parse_ppocr_rec(node: &NodeSpec) -> Result<(Vec<char>, usize)> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, PPOCR_REC_FIELDS)?;
+    let alphabet = match params.get("alphabet") {
+        None => "0123456789".chars().collect::<Vec<_>>(),
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| Error::Config("field alphabet must be a string".to_string()))?
+            .chars()
+            .collect::<Vec<_>>(),
+    };
+    if alphabet.is_empty() {
+        return Err(Error::Config(
+            "field alphabet must not be empty".to_string(),
+        ));
+    }
+    let blank = read_usize(params, "blank_index", alphabet.len())?;
+    if blank > alphabet.len() {
+        return Err(Error::Config(format!(
+            "field blank_index must not exceed the alphabet length ({})",
+            alphabet.len()
+        )));
+    }
+    Ok((alphabet, blank))
 }
 
 fn next_packet(io: &ElementIo) -> Result<Packet> {
@@ -722,6 +830,21 @@ fn params_object(node: &NodeSpec) -> Result<&serde_json::Map<String, serde_json:
         .ok_or_else(|| Error::Config(format!("node {} params must be an object", node.name)))
 }
 
+fn reject_unknown_fields(
+    params: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+) -> Result<()> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(Error::Config(format!(
+                "unknown field `{key}`; expected one of {}",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn read_usize(
     params: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -761,8 +884,11 @@ fn read_f32_array(
     key: &str,
     default: [f32; 3],
 ) -> Result<[f32; 3]> {
-    let Some(values) = params.get(key).and_then(serde_json::Value::as_array) else {
-        return Ok(default);
+    let values = match params.get(key) {
+        None => return Ok(default),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| Error::Config(format!("field {key} must be an array")))?,
     };
     if values.len() != 3 {
         return Err(Error::Config(format!(
@@ -771,12 +897,16 @@ fn read_f32_array(
     }
     let mut output = default;
     for (index, value) in values.iter().enumerate() {
-        output[index] = value
+        let parsed = value
             .as_f64()
             .ok_or_else(|| Error::Config(format!("field {key} must contain numbers")))?
             .to_string()
             .parse::<f32>()
             .map_err(|_| Error::Config(format!("field {key} out of range")))?;
+        if !parsed.is_finite() {
+            return Err(Error::Config(format!("field {key} values must be finite")));
+        }
+        output[index] = parsed;
     }
     Ok(output)
 }
@@ -785,22 +915,74 @@ fn read_f32_vec(
     params: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Result<Vec<f32>> {
-    params
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .map_or(Ok(Vec::new()), |values| {
-            values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_f64()
-                        .ok_or_else(|| Error::Config(format!("field {key} must contain numbers")))?
-                        .to_string()
-                        .parse::<f32>()
-                        .map_err(|_| Error::Config(format!("field {key} out of range")))
-                })
-                .collect()
+    let values = match params.get(key) {
+        None => return Ok(Vec::new()),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| Error::Config(format!("field {key} must be an array")))?,
+    };
+    values
+        .iter()
+        .map(|value| {
+            let parsed = value
+                .as_f64()
+                .ok_or_else(|| Error::Config(format!("field {key} must contain numbers")))?
+                .to_string()
+                .parse::<f32>()
+                .map_err(|_| Error::Config(format!("field {key} out of range")))?;
+            if !parsed.is_finite() {
+                return Err(Error::Config(format!("field {key} values must be finite")));
+            }
+            Ok(parsed)
         })
+        .collect()
+}
+
+fn read_string_vec(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Vec<String>> {
+    let values = match params.get(key) {
+        None => return Ok(Vec::new()),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| Error::Config(format!("field {key} must be an array")))?,
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| Error::Config(format!("field {key} must contain strings")))
+        })
+        .collect()
+}
+
+fn read_nonzero_usize(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: usize,
+) -> Result<usize> {
+    let value = read_usize(params, key, default)?;
+    if value == 0 {
+        return Err(Error::Config(format!("field {key} must be non-zero")));
+    }
+    Ok(value)
+}
+
+fn read_probability(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: f32,
+) -> Result<f32> {
+    let value = read_f32(params, key, default)?;
+    if !(0.0..=1.0).contains(&value) {
+        return Err(Error::Config(format!(
+            "field {key} must be between 0 and 1"
+        )));
+    }
+    Ok(value)
 }
 
 fn usize_f32(value: usize) -> Result<f32> {
@@ -835,6 +1017,15 @@ mod tests {
         ];
         assert_eq!(
             ctc_greedy_decode(&rows, &['a', 'b'], 2).expect("decode"),
+            "ab"
+        );
+        let blank_first_rows = vec![
+            vec![0.0, 0.9, 0.1],
+            vec![0.9, 0.1, 0.0],
+            vec![0.0, 0.1, 0.9],
+        ];
+        assert_eq!(
+            ctc_greedy_decode(&blank_first_rows, &['a', 'b'], 0).expect("decode"),
             "ab"
         );
     }

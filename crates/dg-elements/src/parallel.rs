@@ -81,13 +81,14 @@ const SINGLE_OUTPUT: [PortSchema; 1] = [PortSchema {
     name: "out",
     dtype: None,
 }];
+const DISTRIBUTOR_FIELDS: &[&str] = &["strategy"];
 
 inventory::submit! {
     dg_graph::ElementDescriptor {
         kind: "distributor",
         input_ports: &[INPUT_PORT],
         output_ports: &OUTPUT_PORTS,
-        validate: None,
+        validate: Some(validate_distributor),
         create: create_distributor,
     }
 }
@@ -97,7 +98,7 @@ inventory::submit! {
         kind: "converger",
         input_ports: &INPUT_PORTS,
         output_ports: &SINGLE_OUTPUT,
-        validate: None,
+        validate: Some(validate_converger),
         create: create_converger,
     }
 }
@@ -194,35 +195,72 @@ impl Element for Converger {
 }
 
 fn create_distributor(node: &NodeSpec) -> Result<CreatedElement> {
-    let params = params_object(node)?;
-    let strategy = match params
-        .get("strategy")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("round_robin")
-    {
-        "round_robin" => DistributionStrategy::RoundRobin,
-        "broadcast" => DistributionStrategy::Broadcast,
-        value => {
-            return Err(Error::Config(format!(
-                "unknown distributor strategy {value}"
-            )))
-        }
-    };
+    let strategy = parse_distributor(node)?;
     Ok(CreatedElement {
         element: Box::new(Distributor { strategy }),
         handle: ElementHandle::None,
     })
 }
 
-fn create_converger(_node: &NodeSpec) -> Result<CreatedElement> {
+fn validate_distributor(node: &NodeSpec) -> Result<()> {
+    parse_distributor(node).map(|_| ())
+}
+
+fn parse_distributor(node: &NodeSpec) -> Result<DistributionStrategy> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, DISTRIBUTOR_FIELDS)?;
+    match params
+        .get("strategy")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| Error::Config("field strategy must be a string".to_string()))
+        })
+        .transpose()?
+        .unwrap_or("round_robin")
+    {
+        "round_robin" => Ok(DistributionStrategy::RoundRobin),
+        "broadcast" => Ok(DistributionStrategy::Broadcast),
+        value => Err(Error::Config(format!(
+            "field strategy must be one of round_robin, broadcast; got {value}"
+        ))),
+    }
+}
+
+fn create_converger(node: &NodeSpec) -> Result<CreatedElement> {
+    validate_converger(node)?;
     Ok(CreatedElement {
         element: Box::new(Converger),
         handle: ElementHandle::None,
     })
 }
 
+fn validate_converger(node: &NodeSpec) -> Result<()> {
+    if node.params.is_null() {
+        return Ok(());
+    }
+    reject_unknown_fields(params_object(node)?, &[])
+}
+
 fn params_object(node: &NodeSpec) -> Result<&serde_json::Map<String, serde_json::Value>> {
     node.params
         .as_object()
         .ok_or_else(|| Error::Config(format!("node {} params must be an object", node.name)))
+}
+
+fn reject_unknown_fields(
+    params: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+) -> Result<()> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            let expected = if allowed.is_empty() {
+                "no parameters are supported".to_string()
+            } else {
+                format!("expected one of {}", allowed.join(", "))
+            };
+            return Err(Error::Config(format!("unknown field `{key}`; {expected}")));
+        }
+    }
+    Ok(())
 }
