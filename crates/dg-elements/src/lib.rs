@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
-//! Elements crate placeholder for M0.
-//!
-//! High-level operators and reusable graph elements will be hosted here in a
-//! later milestone.
+//! Pure-Rust algorithm and graph orchestration elements.
+
+mod math;
+mod parallel;
+mod yolo;
+
+pub use math::{iou, nms, resize_letterbox, sigmoid, softmax, top_k, Letterbox};

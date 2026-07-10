@@ -8,7 +8,9 @@ use dg_runtime::{
 use serde_json::{Map, Value};
 use tracing::trace;
 
-use crate::element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema};
+use crate::element::{
+    CreatedElement, Element, ElementHandle, ElementIo, PortSchema, SinkCollector,
+};
 use crate::error::{Error, Result};
 use crate::packet::Packet;
 use crate::registry::ElementDescriptor;
@@ -32,7 +34,7 @@ const INFER_OUTPUT_PORT: PortSchema = PortSchema {
 };
 const SINK_INPUT_PORT: PortSchema = PortSchema {
     name: "in",
-    dtype: Some(DataType::F32),
+    dtype: None,
 };
 
 inventory::submit! {
@@ -143,6 +145,7 @@ impl Element for MockInferenceElement {
                 .tensor_ref()
                 .ok_or_else(|| Error::Runtime("expected tensor payload".to_string()))?
                 .clone();
+            let meta = packet.meta.clone();
             let outputs = if self.echo_inputs {
                 self.runtime.run(&[tensor])?
             } else {
@@ -155,14 +158,14 @@ impl Element for MockInferenceElement {
                 outputs
             };
             for output in outputs {
-                io.send("out", Packet::tensor(output))?;
+                io.send("out", Packet::tensor(output).with_meta(meta.clone()))?;
             }
         }
     }
 }
 
 struct SinkElement {
-    collector: Arc<Mutex<Vec<Tensor>>>,
+    collector: Arc<Mutex<SinkCollector>>,
 }
 
 impl Element for SinkElement {
@@ -182,15 +185,19 @@ impl Element for SinkElement {
             if packet.is_eos() {
                 return Ok(());
             }
-            let tensor = packet
-                .tensor_ref()
-                .ok_or_else(|| Error::Runtime("expected tensor payload".to_string()))?
-                .clone();
             let mut guard = self
                 .collector
                 .lock()
                 .map_err(|_| Error::Runtime("sink collector poisoned".to_string()))?;
-            guard.push(tensor);
+            if let Some(tensor) = packet.tensor_ref() {
+                guard.tensors.push(tensor.clone());
+            } else if let Some(detections) = packet.detections_ref() {
+                guard.detections.push(detections.to_vec());
+            } else {
+                return Err(Error::Runtime(
+                    "expected tensor or detections payload".to_string(),
+                ));
+            }
         }
     }
 }
@@ -256,7 +263,7 @@ fn create_mock_inference(node: &NodeSpec) -> Result<CreatedElement> {
 
 fn create_sink(node: &NodeSpec) -> Result<CreatedElement> {
     let _ = params_object(node)?;
-    let collector = Arc::new(Mutex::new(Vec::new()));
+    let collector = Arc::new(Mutex::new(SinkCollector::default()));
     Ok(CreatedElement {
         element: Box::new(SinkElement {
             collector: collector.clone(),

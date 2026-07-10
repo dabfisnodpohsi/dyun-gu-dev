@@ -352,6 +352,10 @@ name = "dg-elements"
 version = "0.1.0"
 dependencies = [
  "dg-core",
+ "dg-graph",
+ "inventory",
+ "proptest",
+ "serde_json",
 ]
 
 [[package]]

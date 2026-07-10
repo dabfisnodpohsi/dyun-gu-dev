@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dg_core::Tensor;
+use dg_core::{Detection, Tensor};
 use tracing::{error, info};
 
 use crate::element::{Element, ElementHandle, ElementIo};
@@ -45,9 +45,10 @@ impl GraphDiff {
 #[derive(Clone, Debug, Default)]
 pub struct GraphReport {
     pub sinks: BTreeMap<String, Vec<Tensor>>,
+    pub detections: BTreeMap<String, Vec<Detection>>,
 }
 
-type SinkMap = BTreeMap<String, Arc<Mutex<Vec<Tensor>>>>;
+type SinkMap = BTreeMap<String, Arc<Mutex<crate::element::SinkCollector>>>;
 
 pub struct Graph {
     spec: GraphSpec,
@@ -142,7 +143,15 @@ impl Graph {
             let guard = sink
                 .lock()
                 .map_err(|_| Error::Runtime("sink lock poisoned".to_string()))?;
-            report.sinks.insert(name, guard.clone());
+            report.sinks.insert(name.clone(), guard.tensors.clone());
+            report.detections.insert(
+                name,
+                guard
+                    .detections
+                    .iter()
+                    .flat_map(|batch| batch.iter().cloned())
+                    .collect(),
+            );
         }
         Ok(report)
     }

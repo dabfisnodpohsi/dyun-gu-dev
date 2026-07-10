@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use dg_core::{DataType, Tensor};
+use dg_core::{DataType, Detection, Tensor};
 
 use crate::error::{Error, Result};
 use crate::packet::Packet;
@@ -23,7 +23,13 @@ pub enum ElementHandle {
     #[default]
     None,
     Input(Arc<Mutex<VecDeque<Tensor>>>),
-    Sink(Arc<std::sync::Mutex<Vec<Tensor>>>),
+    Sink(Arc<std::sync::Mutex<SinkCollector>>),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SinkCollector {
+    pub tensors: Vec<Tensor>,
+    pub detections: Vec<Vec<Detection>>,
 }
 
 pub struct CreatedElement {

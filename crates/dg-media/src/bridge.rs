@@ -17,10 +17,10 @@ pub fn graph_packet_to_media_frame(packet: Packet) -> MediaFrame {
     let Packet { meta, payload } = packet;
     let tensor = match Arc::try_unwrap(payload) {
         Ok(PacketPayload::Tensor(tensor)) => Some(tensor),
-        Ok(PacketPayload::EndOfStream) => None,
+        Ok(PacketPayload::Detections(_) | PacketPayload::EndOfStream) => None,
         Err(payload) => match payload.as_ref() {
             PacketPayload::Tensor(tensor) => Some(tensor.clone()),
-            PacketPayload::EndOfStream => None,
+            PacketPayload::Detections(_) | PacketPayload::EndOfStream => None,
         },
     };
     match tensor {

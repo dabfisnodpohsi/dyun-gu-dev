@@ -14,7 +14,7 @@ mod packet;
 mod registry;
 mod spec;
 
-pub use element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema};
+pub use element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema, SinkCollector};
 pub use engine::{watch, DataPipe, Graph, GraphDiff, GraphReport, WatchHandle};
 pub use error::{Error, Result};
 pub use packet::{Packet, PacketMeta, PacketPayload};
