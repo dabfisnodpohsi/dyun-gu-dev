@@ -1139,6 +1139,7 @@ connections:
         .expect("valid graph spec")
     }
 
+    #[cfg(feature = "stream")]
     fn media_stream_graph_spec() -> CString {
         CString::new(
             r#"apiVersion: dg/v1
@@ -1268,6 +1269,7 @@ connections:
         }
     }
 
+    #[cfg(feature = "stream")]
     #[test]
     fn c_abi_load_discovers_media_and_stream_elements() {
         let mut engine = ptr::null_mut();
