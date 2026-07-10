@@ -6,12 +6,15 @@
 //! logic for choosing zero-copy versus staging transfer paths.
 
 mod bridge;
+mod elements;
 mod frame;
 mod mock;
+mod ops;
 mod planner;
 
 pub use frame::{MediaFrame, MediaFrameKind, MediaFrameMeta};
 pub use mock::{MockMediaSink, MockMediaSource};
+pub use ops::{DecodeCore, EncodeCore, MediaPoll, OsdBox, OsdCore, ResizeCore};
 pub use planner::{
     preferred_memory_domain, CopyPath, ZeroCopyPlan, ZeroCopyPlanner, ZeroCopyRequest,
 };
@@ -27,6 +30,8 @@ pub use bridge::{
 
 #[cfg(feature = "avcodec")]
 pub use bridge::{
-    avcodec_handle_to_buffer, avcodec_image_to_media_frame, avcodec_packet_to_media_frame,
-    buffer_to_avcodec_handle, media_frame_to_avcodec_image, media_frame_to_avcodec_packet,
+    avcodec_external_handle_to_core, avcodec_handle_to_buffer, avcodec_image_to_media_frame,
+    avcodec_memory_domain_to_core, avcodec_packet_to_media_frame, buffer_to_avcodec_handle,
+    core_external_handle_to_avcodec, core_memory_domain_to_avcodec, import_avcodec_handle,
+    media_frame_to_avcodec_image, media_frame_to_avcodec_packet, ImportedBuffer,
 };

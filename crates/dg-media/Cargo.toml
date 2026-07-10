@@ -15,7 +15,9 @@ dg-core = { path = "../dg-core" }
 dg-graph = { path = "../dg-graph" }
 dg-runtime = { path = "../dg-runtime" }
 dg-scheduler = { path = "../dg-scheduler" }
+inventory.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
