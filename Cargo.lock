@@ -512,8 +512,10 @@ dependencies = [
  "dg-media-avcodec",
  "dg-runtime",
  "dg-scheduler",
+ "inventory",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
 ]
