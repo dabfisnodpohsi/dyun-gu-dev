@@ -400,19 +400,15 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
 
 ### 当前实现状态
 
-M0–M6 的无硬件软件交付已落地：图执行支持 work-stealing ThreadPool、
-`ParallelType` 与可配置背压；RKNN/TensorRT/Sophon 具备 feature-gated 真实执行
-路径、能力校验和无硬件 mock/纯逻辑测试；GraphSpec 的通用 `inference` element
-通过后端 descriptor 解析专属参数，并可由 CLI feature 注册真实后端；加载阶段
-通过 element validator 完成 inference 参数、后端注册及精度/设备/部署能力
-preflight，不初始化模型或硬件；`source`、`input`、`mock_inference`、`sink`
-内置 element 同样在加载阶段拒绝未知字段、错误类型和非法枚举值；媒体、流、算法、
-C ABI、热更新、CLI、fuzz/benchmark、文档及四目标 CI/发布配置均已接入。
+M0–M6 的基础骨架和默认/mock 软件路径已经落地，但设计尚未全部完成。当前仍有
+element 加载期校验与专属 JSON Schema、GraphSpec defaults/标准字段、运行中增量
+热更新、`-sys` 分层、scheduler/runtime 实际接线、真实 avcodec/cheetah adapter、
+设备句柄 zero-copy、指标/精度回归/码流 fuzz 和综合 demo 等软件任务。
 
-硬件验收不在通用 CI 中伪造。以下交付仍需对应自托管 runner 或目标设备执行：
-RK3588 三核吞吐与零拷贝计数、TensorRT GPU 精度/吞吐、Sophon Host/SoC
-实机推理、硬件编解码到推理/推流的端到端零拷贝对比。相关 feature 路径在无硬件
-环境中通过 stub SDK 类型检查，并在缺少 SDK/设备时返回明确能力错误。
+完整剩余任务、状态、依赖和逐 PR 验收条件见
+[design-remaining-tasks.md](design-remaining-tasks.md)。硬件验收不在通用 CI 中
+伪造；RK3588、NVIDIA GPU、Sophon 及硬件编解码端到端验收保持外部阻塞，直到对应
+自托管 runner 或目标设备产出实测报告。
 
 ---
 
