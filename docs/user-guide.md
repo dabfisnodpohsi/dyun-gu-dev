@@ -72,6 +72,15 @@ defaults:
 配置，顶层文件提供的值优先。`${var}` 变量会在 defaults 注入后替换，因此默认值
 也可以引用变量。
 
+配置模型同时接受设计文档中的标准字段别名：`type` 是 `kind` 的别名，
+`edges` 是 `connections` 的别名，`vars` 是 `variables` 的别名。旧字段仍然
+保持兼容。节点也可以用 `backend`、`device`、`precision` 提供节点级覆盖，
+优先级为 **params 显式字段 > 节点级字段 > template 参数 > 全局 defaults**。
+`threads` 和 `sink` 字段目前仅保留配置数据，运行时语义属于 CFG-08。
+结构化的 `defaults.device`（例如 `{ kind: OpenVino, id: 0 }`）可以解析并
+序列化，但调度器级设备含义暂由后续 SCH-* 任务接入；当前只有字符串形式会
+注入 `inference` 参数。
+
 执行策略在顶层 `execution` 配置：
 
 ```yaml

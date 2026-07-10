@@ -40,7 +40,7 @@
 | CFG-04 | 已完成 | `dg-elements` 十个算法/并行 element 参数 validator | yolo、resnet、retinaface、bytetrack、ppocr、distributor、converger 全部使用 validator；非法阈值/尺寸/策略和未知字段在加载期报错 | 无 |
 | CFG-05 | 已完成 | element 专属参数 JSON Schema 与用户导出入口 | registry 提供参数 schema；导出 schema 按 element kind 描述 required/type/enum；新增 `dg schema` 并测试所有注册项均有 schema | CFG-02、CFG-03、CFG-04 |
 | CFG-06 | 已完成 | GraphSpec `defaults` 合并 | 支持全局 device/precision/backend 默认值；node override 优先；与 template/variable/include 的优先级有测试和文档 | 无 |
-| CFG-07 | 未开始 | 对齐 §8.3 标准字段 | 支持或兼容 `type`/`edges`，并使设计文档中的规范示例可解析；保留现有 `kind`/`connections` 的兼容性 | CFG-06 |
+| CFG-07 | 已完成 | 对齐 §8.3 标准字段 | 支持或兼容 `type`/`edges`，并使设计文档中的规范示例可解析；保留现有 `kind`/`connections` 的兼容性 | CFG-06 |
 | CFG-08 | 未开始 | per-node `threads` 与 `sink` 语义 | `threads >= 1` 控制 element 实例/worker；`sink` 明确终止输出连通要求；配置、执行和错误路径有测试 | CFG-01、CFG-07 |
 | CFG-09 | 未开始 | template/variable/include 引用严格校验 | 未知 template、未解析 `${var}`、无 base dir 的 include 和 include 环均在加载期给出字段级错误 | 无 |
 | HOT-01 | 未开始 | CLI 文件 watch 入口 | `dg run --watch` 监听配置、输出 diff、拒绝非法 reload，并更新用户指南 | 无 |
