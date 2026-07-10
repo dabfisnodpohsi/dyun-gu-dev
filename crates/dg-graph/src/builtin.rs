@@ -77,6 +77,7 @@ struct SourceElement {
     count: usize,
     shape: Shape,
     dtype: DataType,
+    format: DataFormat,
     start: f32,
 }
 
@@ -92,7 +93,12 @@ impl Element for SourceElement {
                 return Err(Error::NotRunning);
             }
             let step = usize_to_exact_f32(index, "source index")?;
-            let tensor = filled_tensor(self.shape.clone(), self.dtype, self.start + step)?;
+            let tensor = filled_tensor(
+                self.shape.clone(),
+                self.dtype,
+                self.format,
+                self.start + step,
+            )?;
             io.send("out", Packet::tensor(tensor))?;
         }
         io.broadcast_eos()
@@ -215,12 +221,14 @@ fn create_source(node: &NodeSpec) -> Result<CreatedElement> {
     let count = read_usize(params, "count", 1)?;
     let shape = read_shape(params, "shape", &[1, 4])?;
     let dtype = read_dtype(params, "dtype").unwrap_or(DataType::F32);
+    let format = read_format(params, "format").unwrap_or(DataFormat::NC);
     let start = read_f32(params, "start", 0.0)?;
     Ok(CreatedElement {
         element: Box::new(SourceElement {
             count,
             shape,
             dtype,
+            format,
             start,
         }),
         handle: ElementHandle::None,
@@ -369,9 +377,27 @@ fn read_dtype(params: &Map<String, Value>, key: &str) -> Option<DataType> {
         })
 }
 
-fn filled_tensor(shape: Shape, dtype: DataType, value: f32) -> Result<Tensor> {
+fn read_format(params: &Map<String, Value>, key: &str) -> Option<DataFormat> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|name| match name {
+            "auto" => Some(DataFormat::Auto),
+            "nchw" => Some(DataFormat::NCHW),
+            "nhwc" => Some(DataFormat::NHWC),
+            "nc" => Some(DataFormat::NC),
+            "n" => Some(DataFormat::N),
+            "nc4hw" => Some(DataFormat::NC4HW),
+            "nc8hw" => Some(DataFormat::NC8HW),
+            "ncdhw" => Some(DataFormat::NCDHW),
+            "oihw" => Some(DataFormat::OIHW),
+            _ => None,
+        })
+}
+
+fn filled_tensor(shape: Shape, dtype: DataType, format: DataFormat, value: f32) -> Result<Tensor> {
     let device = dg_core::CpuDevice::new();
-    let desc = TensorDesc::new(shape.clone(), dtype, DataFormat::NC, DeviceKind::Cpu);
+    let desc = TensorDesc::new(shape.clone(), dtype, format, DeviceKind::Cpu);
     let tensor = Tensor::allocate(&device, desc)?;
     if dtype == DataType::F32 {
         let count = shape.element_count()?;
@@ -466,12 +492,12 @@ mod tests {
     #[test]
     fn filled_tensor_rejects_u8_out_of_range_and_fractional_values() {
         let shape = Shape::new(vec![1]);
-        let out_of_range = filled_tensor(shape.clone(), DataType::U8, 256.0);
+        let out_of_range = filled_tensor(shape.clone(), DataType::U8, DataFormat::NC, 256.0);
         assert!(
             matches!(out_of_range, Err(Error::Config(message)) if message.contains("cannot be represented as u8"))
         );
 
-        let fractional = filled_tensor(shape, DataType::U8, 1.5);
+        let fractional = filled_tensor(shape, DataType::U8, DataFormat::NC, 1.5);
         assert!(
             matches!(fractional, Err(Error::Config(message)) if message.contains("cannot be represented as u8"))
         );

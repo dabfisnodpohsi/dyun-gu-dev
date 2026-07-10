@@ -138,9 +138,15 @@ pub fn media_frame_to_cheetah_avframe(
 }
 
 #[cfg(feature = "cheetah")]
-#[allow(dead_code)]
 pub struct CheetahPublisherSinkAdapter {
     inner: Box<dyn dg_stream_cheetah::PublisherSink>,
+}
+
+#[cfg(feature = "cheetah")]
+impl CheetahPublisherSinkAdapter {
+    pub fn new(inner: Box<dyn dg_stream_cheetah::PublisherSink>) -> Self {
+        Self { inner }
+    }
 }
 
 #[cfg(feature = "cheetah")]
@@ -181,9 +187,15 @@ impl PublisherSink for CheetahPublisherSinkAdapter {
 }
 
 #[cfg(feature = "cheetah")]
-#[allow(dead_code)]
 pub struct CheetahSubscriberSourceAdapter {
     inner: Box<dyn dg_stream_cheetah::SubscriberSource>,
+}
+
+#[cfg(feature = "cheetah")]
+impl CheetahSubscriberSourceAdapter {
+    pub fn new(inner: Box<dyn dg_stream_cheetah::SubscriberSource>) -> Self {
+        Self { inner }
+    }
 }
 
 #[cfg(feature = "cheetah")]

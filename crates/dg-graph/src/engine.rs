@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, sync_channel, Receiver, SyncSender};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -13,9 +14,10 @@ use tracing::{error, info};
 
 use crate::element::{Element, ElementHandle, ElementIo};
 use crate::error::{Error, Result};
-use crate::packet::Packet;
+use crate::pipe::{DataPipe, PipeReceiver, PipeSender};
+use crate::pool::ThreadPool;
 use crate::registry::create_element;
-use crate::spec::{ConnectionSpec, GraphSpec, NodeSpec};
+use crate::spec::{ConnectionSpec, ExecutionSpec, GraphSpec, NodeSpec, ParallelType};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphDiff {
@@ -37,7 +39,7 @@ impl GraphDiff {
 
     pub fn apply(self, graph: &mut Graph) -> Result<()> {
         let new_spec = graph.spec.clone().merge_for_diff(self)?;
-        *graph = Graph::new(new_spec)?;
+        graph.reload(new_spec)?;
         Ok(())
     }
 }
@@ -138,6 +140,8 @@ impl Graph {
     pub fn run_with_inputs(&self, inputs: HashMap<String, Vec<Tensor>>) -> Result<GraphReport> {
         info!(
             node_count = self.spec.nodes.len(),
+            parallel = ?self.spec.execution.parallel,
+            queue_capacity = self.spec.execution.queue_capacity,
             "starting graph execution"
         );
         let (runtime, sinks) = RuntimeGraph::build(self.spec.clone(), inputs)?;
@@ -194,7 +198,10 @@ impl Graph {
 }
 
 pub struct RuntimeGraph {
-    threads: Vec<thread::JoinHandle<Result<()>>>,
+    nodes: Vec<ExecNode>,
+    edges: Vec<(String, String)>,
+    stop: Arc<AtomicBool>,
+    execution: ExecutionSpec,
 }
 
 impl RuntimeGraph {
@@ -235,9 +242,14 @@ impl RuntimeGraph {
             guard.extend(tensors);
         }
 
+        let mut edges = Vec::with_capacity(spec.connections.len());
         for connection in &spec.connections {
             let parsed = ConnectionSpec::parse(connection)?;
-            let pipe = DataPipe::bounded(20);
+            edges.push((parsed.from_node.clone(), parsed.to_node.clone()));
+            let pipe = match spec.execution.parallel {
+                ParallelType::Pipeline => DataPipe::bounded(spec.execution.queue_capacity),
+                ParallelType::Sequential | ParallelType::Task => DataPipe::unbounded(),
+            };
             let (sender, receiver) = pipe.split();
             {
                 let src = nodes.get_mut(&parsed.from_node).ok_or_else(|| {
@@ -275,45 +287,77 @@ impl RuntimeGraph {
             }
         }
 
-        let mut threads = Vec::with_capacity(nodes.len());
+        let mut exec_nodes = Vec::with_capacity(nodes.len());
         for mut node in nodes.into_values() {
-            let stop = stop.clone();
-            let backoff = Duration::from_millis(1);
             let io = ElementIo {
                 name: node.name.clone(),
                 inputs: node.inputs.drain().collect(),
                 outputs: node.outputs.drain().collect(),
                 stop: stop.clone(),
-                send_backoff: backoff,
+                send_backoff: Duration::from_millis(1),
             };
             let element = node
                 .element
                 .take()
                 .ok_or_else(|| Error::Config("missing element".to_string()))?;
-            let thread_stop = stop.clone();
-            threads.push(thread::spawn(move || {
-                let result = catch_unwind(AssertUnwindSafe(|| element.run(io)));
-                match result {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(err)) => {
-                        thread_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                        Err(err)
-                    }
-                    Err(_) => {
-                        thread_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                        Err(Error::Runtime("element panicked".to_string()))
-                    }
-                }
-            }));
+            exec_nodes.push(ExecNode {
+                name: node.name,
+                element,
+                io,
+            });
         }
 
-        Ok((Self { threads }, sinks))
+        Ok((
+            Self {
+                nodes: exec_nodes,
+                edges,
+                stop,
+                execution: spec.execution.clone(),
+            },
+            sinks,
+        ))
     }
 
     fn run(self) -> Result<()> {
+        match self.execution.parallel {
+            ParallelType::Sequential => self.run_sequential(),
+            ParallelType::Task => self.run_task(),
+            ParallelType::Pipeline => self.run_pipeline(),
+        }
+    }
+
+    fn run_sequential(self) -> Result<()> {
+        let order = topological_order(&self.nodes, &self.edges)?;
+        let mut by_name: HashMap<String, ExecNode> = self
+            .nodes
+            .into_iter()
+            .map(|node| (node.name.clone(), node))
+            .collect();
+        for name in order {
+            let node = by_name
+                .remove(&name)
+                .ok_or_else(|| Error::Runtime(format!("missing runtime node {name}")))?;
+            run_element(node.element, node.io, &self.stop)?;
+        }
+        Ok(())
+    }
+
+    fn run_pipeline(self) -> Result<()> {
+        let pool = ThreadPool::new(self.nodes.len().max(1))?;
+        let (results, receiver) = mpsc::channel();
+        let total = self.nodes.len();
+        for node in self.nodes {
+            let results = results.clone();
+            let stop = self.stop.clone();
+            pool.spawn(move || {
+                let result = run_element(node.element, node.io, &stop);
+                let _ = results.send(result);
+            })?;
+        }
+        drop(results);
         let mut first_error = None;
-        for thread in self.threads {
-            match thread.join() {
+        for _ in 0..total {
+            match receiver.recv() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
                     if first_error.is_none() {
@@ -322,7 +366,86 @@ impl RuntimeGraph {
                 }
                 Err(_) => {
                     if first_error.is_none() {
-                        first_error = Some(Error::Runtime("element panicked".to_string()));
+                        first_error = Some(Error::Runtime("element worker lost".to_string()));
+                    }
+                    break;
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    fn run_task(self) -> Result<()> {
+        // Reject cycles up front; dependency-driven scheduling cannot make
+        // progress on cyclic graphs.
+        topological_order(&self.nodes, &self.edges)?;
+        let workers = match self.execution.workers {
+            Some(workers) => workers,
+            None => thread::available_parallelism()
+                .map(NonZeroUsize::get)
+                .unwrap_or(1),
+        }
+        .min(self.nodes.len().max(1));
+        let pool = ThreadPool::new(workers)?;
+
+        let mut indegree: HashMap<String, usize> = self
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), 0))
+            .collect();
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        for (from, to) in &self.edges {
+            if let Some(count) = indegree.get_mut(to) {
+                *count += 1;
+            }
+            dependents.entry(from.clone()).or_default().push(to.clone());
+        }
+
+        let mut waiting: HashMap<String, ExecNode> = self
+            .nodes
+            .into_iter()
+            .map(|node| (node.name.clone(), node))
+            .collect();
+        let ready: Vec<String> = indegree
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let (results, receiver) = mpsc::channel::<(String, Result<()>)>();
+        let mut running = 0usize;
+        for name in ready {
+            spawn_task(&pool, &mut waiting, &name, &self.stop, &results)?;
+            running += 1;
+        }
+
+        let mut first_error = None;
+        while running > 0 {
+            let (name, result) = receiver
+                .recv()
+                .map_err(|_| Error::Runtime("element worker lost".to_string()))?;
+            running -= 1;
+            match result {
+                Ok(()) => {
+                    if first_error.is_none() {
+                        for dependent in dependents.remove(&name).unwrap_or_default() {
+                            let Some(count) = indegree.get_mut(&dependent) else {
+                                continue;
+                            };
+                            *count -= 1;
+                            if *count == 0 {
+                                spawn_task(&pool, &mut waiting, &dependent, &self.stop, &results)?;
+                                running += 1;
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
                     }
                 }
             }
@@ -334,28 +457,85 @@ impl RuntimeGraph {
     }
 }
 
+fn spawn_task(
+    pool: &ThreadPool,
+    waiting: &mut HashMap<String, ExecNode>,
+    name: &str,
+    stop: &Arc<AtomicBool>,
+    results: &mpsc::Sender<(String, Result<()>)>,
+) -> Result<()> {
+    let node = waiting
+        .remove(name)
+        .ok_or_else(|| Error::Runtime(format!("missing runtime node {name}")))?;
+    let stop = stop.clone();
+    let results = results.clone();
+    pool.spawn(move || {
+        let result = run_element(node.element, node.io, &stop);
+        let _ = results.send((node.name, result));
+    })
+}
+
+fn run_element(element: Box<dyn Element>, io: ElementIo, stop: &Arc<AtomicBool>) -> Result<()> {
+    match catch_unwind(AssertUnwindSafe(|| element.run(io))) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err(err)
+        }
+        Err(_) => {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err(Error::Runtime("element panicked".to_string()))
+        }
+    }
+}
+
+fn topological_order(nodes: &[ExecNode], edges: &[(String, String)]) -> Result<Vec<String>> {
+    let mut indegree: BTreeMap<&str, usize> =
+        nodes.iter().map(|node| (node.name.as_str(), 0)).collect();
+    let mut adjacency: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (from, to) in edges {
+        if let Some(count) = indegree.get_mut(to.as_str()) {
+            *count += 1;
+        }
+        adjacency.entry(from.as_str()).or_default().push(to);
+    }
+    let mut ready: Vec<&str> = indegree
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| *name)
+        .collect();
+    let mut order = Vec::with_capacity(nodes.len());
+    while let Some(name) = ready.pop() {
+        order.push(name.to_string());
+        for &next in adjacency.get(name).map(Vec::as_slice).unwrap_or_default() {
+            if let Some(count) = indegree.get_mut(next) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(next);
+                }
+            }
+        }
+    }
+    if order.len() != nodes.len() {
+        return Err(Error::Config(
+            "sequential/task execution requires an acyclic graph".to_string(),
+        ));
+    }
+    Ok(order)
+}
+
 struct NodeRuntime {
     name: String,
     element: Option<Box<dyn Element>>,
     handle: ElementHandle,
-    inputs: HashMap<String, Receiver<Packet>>,
-    outputs: HashMap<String, Vec<SyncSender<Packet>>>,
+    inputs: HashMap<String, PipeReceiver>,
+    outputs: HashMap<String, Vec<PipeSender>>,
 }
 
-pub struct DataPipe {
-    sender: SyncSender<Packet>,
-    receiver: Receiver<Packet>,
-}
-
-impl DataPipe {
-    pub fn bounded(capacity: usize) -> Self {
-        let (sender, receiver) = sync_channel(capacity);
-        Self { sender, receiver }
-    }
-
-    pub fn split(self) -> (SyncSender<Packet>, Receiver<Packet>) {
-        (self.sender, self.receiver)
-    }
+struct ExecNode {
+    name: String,
+    element: Box<dyn Element>,
+    io: ElementIo,
 }
 
 impl GraphSpec {

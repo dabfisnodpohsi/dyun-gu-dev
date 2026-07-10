@@ -148,6 +148,20 @@ impl Engine {
         self.pending_inputs.clear();
     }
 
+    fn reload(&mut self, spec: GraphSpec) -> dg_graph::Result<GraphDiff> {
+        if !self.pending_inputs.is_empty() {
+            return Err(dg_graph::Error::Runtime(
+                "cannot reload while inputs are pending; run them before reloading".to_string(),
+            ));
+        }
+        let diff = match &mut self.graph {
+            Some(graph) => graph.reload(spec.clone())?,
+            None => Graph::diff(&self.spec, &spec),
+        };
+        self.spec = spec;
+        Ok(diff)
+    }
+
     fn input_node_name(&self) -> Result<String, String> {
         let mut names = self
             .spec
@@ -219,6 +233,14 @@ fn ffi_result<T>(operation: impl FnOnce() -> Result<T, (DgStatus, String)>) -> R
 
 fn graph_error(error: impl std::fmt::Display) -> (DgStatus, String) {
     (DgStatus::ParseError, error.to_string())
+}
+
+fn reload_error(error: dg_graph::Error) -> (DgStatus, String) {
+    let status = match error {
+        dg_graph::Error::Runtime(_) | dg_graph::Error::NotRunning => DgStatus::RuntimeError,
+        _ => DgStatus::ParseError,
+    };
+    (status, error.to_string())
 }
 
 fn write_diff_counts(
@@ -500,7 +522,10 @@ pub unsafe extern "C" fn dg_engine_load_file(
     }
 }
 
-/// Reloads a graph specification from a UTF-8 string and invalidates the built graph.
+/// Reloads a graph specification from a UTF-8 string.
+///
+/// A built graph is updated in place and remains ready to run. Reload is rejected while inputs
+/// are pending so that queued data is never silently interpreted by a changed graph.
 #[no_mangle]
 pub unsafe extern "C" fn dg_engine_reload_string(
     engine: *mut DgEngine,
@@ -518,8 +543,7 @@ pub unsafe extern "C" fn dg_engine_reload_string(
             GraphSpec::from_str_with_format(content, format_from_c(format)).map_err(graph_error)?;
         spec.validate().map_err(graph_error)?;
         let engine = unsafe { &mut *engine };
-        engine.inner.spec = spec;
-        engine.inner.invalidate();
+        engine.inner.reload(spec).map_err(reload_error)?;
         Ok(())
     }) {
         Ok(()) => DgStatus::Ok,
@@ -527,7 +551,10 @@ pub unsafe extern "C" fn dg_engine_reload_string(
     }
 }
 
-/// Reloads a graph specification from a UTF-8 path and invalidates the built graph.
+/// Reloads a graph specification from a UTF-8 path.
+///
+/// A built graph is updated in place and remains ready to run. Reload is rejected while inputs
+/// are pending so that queued data is never silently interpreted by a changed graph.
 #[no_mangle]
 pub unsafe extern "C" fn dg_engine_reload_file(
     engine: *mut DgEngine,
@@ -542,8 +569,7 @@ pub unsafe extern "C" fn dg_engine_reload_file(
             .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
         let spec = GraphSpec::load_from_path(Path::new(path)).map_err(graph_error)?;
         let engine = unsafe { &mut *engine };
-        engine.inner.spec = spec;
-        engine.inner.invalidate();
+        engine.inner.reload(spec).map_err(reload_error)?;
         Ok(())
     }) {
         Ok(()) => DgStatus::Ok,
@@ -1249,7 +1275,7 @@ connections: []
     }
 
     #[test]
-    fn c_abi_diff_and_reload_invalidate_built_graph() {
+    fn c_abi_diff_and_reload_preserve_built_graph() {
         let mut engine = ptr::null_mut();
         assert_eq!(unsafe { dg_engine_create(&mut engine) }, DgStatus::Ok);
         let initial = graph_spec();
@@ -1296,7 +1322,38 @@ connections: []
             unsafe { dg_engine_reload_string(engine, DgGraphFormat::Yaml, updated.as_ptr()) },
             DgStatus::Ok
         );
-        assert_eq!(unsafe { dg_engine_run(engine) }, DgStatus::NotBuilt);
+        let input = [1.0_f32, 2.0, 3.0, 4.0];
+        let input_bytes: Vec<u8> = input.iter().flat_map(|value| value.to_ne_bytes()).collect();
+        let shape = [1_usize, 4];
+        let mut tensor = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dg_tensor_create(
+                    input_bytes.as_ptr(),
+                    input_bytes.len(),
+                    shape.as_ptr(),
+                    shape.len(),
+                    DgDataType::F32,
+                    DgDataFormat::Nc,
+                    DgDeviceKind::Cpu,
+                    &mut tensor,
+                )
+            },
+            DgStatus::Ok
+        );
+        assert_eq!(unsafe { dg_engine_push(engine, tensor) }, DgStatus::Ok);
+        assert_eq!(
+            unsafe { dg_engine_reload_string(engine, DgGraphFormat::Yaml, initial.as_ptr()) },
+            DgStatus::RuntimeError
+        );
+        assert!(!dg_last_error().is_null());
+        assert_eq!(unsafe { dg_engine_run(engine) }, DgStatus::Ok);
+        let mut output = ptr::null_mut();
+        assert_eq!(unsafe { dg_engine_poll(engine, &mut output) }, DgStatus::Ok);
+        unsafe {
+            dg_tensor_free(output);
+            dg_tensor_free(tensor);
+        }
         unsafe { dg_engine_free(engine) };
     }
 

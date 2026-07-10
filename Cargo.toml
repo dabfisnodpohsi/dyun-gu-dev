@@ -29,6 +29,7 @@ half = "2"
 inventory = "0.3"
 indexmap = "=2.3.0"
 async-trait = "0.1"
+libc = "0.2"
 anyhow = "1"
 bindgen = "0.70"
 bytes = { version = "1", features = ["serde"] }
@@ -46,6 +47,7 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
+schemars = "1.2"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

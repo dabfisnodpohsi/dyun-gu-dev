@@ -5,6 +5,14 @@ use dg_graph::{Packet, PacketPayload};
 
 use crate::{MediaFrame, MediaFrameKind};
 
+#[cfg(feature = "avcodec")]
+use dg_core::{BufferDesc, ExternalDropGuard};
+#[cfg(feature = "avcodec")]
+use tracing::debug;
+
+#[cfg(feature = "avcodec")]
+use crate::CopyPath;
+
 pub fn tensor_to_frame(tensor: Tensor) -> MediaFrame {
     MediaFrame::from_tensor(tensor)
 }
@@ -62,22 +70,126 @@ pub fn media_frame_to_graph_packet(frame: MediaFrame) -> Result<Packet> {
     Ok(Packet::tensor(frame.into_tensor()?))
 }
 
+/// Result of importing an avcodec [`dg_media_avcodec::BufferHandle`] into a
+/// dg-core [`Buffer`], with the actual transfer path taken.
+#[cfg(feature = "avcodec")]
+#[derive(Clone, Debug)]
+pub struct ImportedBuffer {
+    pub buffer: Buffer,
+    pub zero_copy: bool,
+    pub path: CopyPath,
+}
+
+/// Imports an avcodec buffer handle into a dg-core [`Buffer`] targeting
+/// `target_domain`.
+///
+/// - Source domain equals `target_domain`: the handle is **shared** via
+///   [`Buffer::from_external`] + [`ExternalDropGuard`] — the guard keeps a
+///   clone of the avcodec handle alive until every clone of the returned
+///   buffer is dropped (`copy_count == 0`). Host-readable bytes are exposed
+///   through the buffer; non-host device memory is represented by the shared
+///   external handle and is not host-readable through `read_bytes`.
+/// - Otherwise an explicit **staging fallback** is taken through
+///   `stage_to_host` / `stage_to` (`copy_count == 1` per domain crossing).
+///   Missing staging support surfaces as [`dg_core::Error::Unsupported`]
+///   rather than silently degrading.
+///
+/// The chosen path and copy count are logged and returned for diagnostics.
+#[cfg(feature = "avcodec")]
+pub fn import_avcodec_handle(
+    handle: &dg_media_avcodec::BufferHandle,
+    device: DeviceKind,
+    target_domain: MemoryDomain,
+) -> Result<ImportedBuffer> {
+    let source_domain = avcodec_memory_domain_to_core(handle.domain());
+    let (buffer, path) = if source_domain == target_domain {
+        let buffer = share_avcodec_handle(handle, device, source_domain)?;
+        (
+            buffer,
+            CopyPath {
+                domains: vec![source_domain],
+                copy_count: 0,
+            },
+        )
+    } else {
+        let staged = handle
+            .stage_to(core_memory_domain_to_avcodec(target_domain), handle.id())
+            .map_err(|err| match err {
+                dg_media_avcodec::AvError::Unsupported => dg_core::Error::Unsupported(format!(
+                    "no staging path from {source_domain:?} to {target_domain:?} for avcodec handle {}",
+                    handle.id()
+                )),
+                other => dg_core::Error::Buffer(format!(
+                    "staging avcodec handle {} from {source_domain:?} to {target_domain:?} failed: {other:?}",
+                    handle.id()
+                )),
+            })?;
+        let buffer = share_avcodec_handle(&staged, device, target_domain)?;
+        (
+            buffer,
+            CopyPath {
+                domains: vec![source_domain, target_domain],
+                copy_count: 1,
+            },
+        )
+    };
+    let zero_copy = path.copy_count == 0;
+    debug!(
+        handle_id = handle.id(),
+        source_domain = ?source_domain,
+        target_domain = ?target_domain,
+        copy_count = path.copy_count,
+        zero_copy,
+        path = ?path.domains,
+        "imported avcodec buffer handle"
+    );
+    Ok(ImportedBuffer {
+        buffer,
+        zero_copy,
+        path,
+    })
+}
+
+/// Wraps an avcodec handle as a dg-core [`Buffer`] in the same memory domain.
+///
+/// The returned buffer holds an [`ExternalDropGuard`] owning a clone of the
+/// avcodec handle, so the underlying decoder/encoder memory outlives every
+/// clone of the buffer. Host-readable handles expose their bytes; device
+/// handles only carry the shared [`dg_core::ExternalHandle`] token.
+#[cfg(feature = "avcodec")]
+fn share_avcodec_handle(
+    handle: &dg_media_avcodec::BufferHandle,
+    device: DeviceKind,
+    domain: MemoryDomain,
+) -> Result<Buffer> {
+    let bytes = handle
+        .host_bytes()
+        .map_or_else(|| vec![0; handle.size()], <[u8]>::to_vec);
+    let external = avcodec_external_handle_to_core(handle.external());
+    let keepalive = handle.clone();
+    let guard = ExternalDropGuard::new(move || drop(keepalive));
+    Buffer::from_external(
+        device,
+        domain,
+        BufferDesc::new(handle.size(), 1),
+        external,
+        bytes,
+        guard,
+    )
+}
+
 #[cfg(feature = "avcodec")]
 pub fn avcodec_handle_to_buffer(
     handle: &dg_media_avcodec::BufferHandle,
     device: DeviceKind,
 ) -> Result<Buffer> {
-    let staged = if handle.domain() == dg_media_avcodec::MemoryDomain::Host {
-        handle.clone()
+    let source_domain = avcodec_memory_domain_to_core(handle.domain());
+    let target_domain = if source_domain == MemoryDomain::Host {
+        MemoryDomain::Host
     } else {
-        handle
-            .stage_to_host(0)
-            .map_err(|err| dg_core::Error::Buffer(format!("{err:?}")))?
+        source_domain
     };
-    let bytes = staged
-        .host_bytes()
-        .map_or_else(|| vec![0; staged.size()], |slice| slice.to_vec());
-    Buffer::from_host_bytes(device, dg_core::BufferDesc::new(bytes.len(), 1), bytes)
+    Ok(import_avcodec_handle(handle, device, target_domain)?.buffer)
 }
 
 #[cfg(feature = "avcodec")]
@@ -174,7 +286,6 @@ pub fn media_frame_to_avcodec_image(
 }
 
 #[cfg(feature = "avcodec")]
-#[allow(dead_code)]
 pub fn avcodec_memory_domain_to_core(value: dg_media_avcodec::MemoryDomain) -> MemoryDomain {
     match value {
         dg_media_avcodec::MemoryDomain::Host => MemoryDomain::Host,
@@ -188,7 +299,6 @@ pub fn avcodec_memory_domain_to_core(value: dg_media_avcodec::MemoryDomain) -> M
 }
 
 #[cfg(feature = "avcodec")]
-#[allow(dead_code)]
 pub fn core_memory_domain_to_avcodec(value: MemoryDomain) -> dg_media_avcodec::MemoryDomain {
     match value {
         MemoryDomain::Host => dg_media_avcodec::MemoryDomain::Host,
@@ -204,7 +314,6 @@ pub fn core_memory_domain_to_avcodec(value: MemoryDomain) -> dg_media_avcodec::M
 }
 
 #[cfg(feature = "avcodec")]
-#[allow(dead_code)]
 pub fn avcodec_external_handle_to_core(
     value: dg_media_avcodec::ExternalHandle,
 ) -> crate::ExternalHandle {
@@ -215,7 +324,6 @@ pub fn avcodec_external_handle_to_core(
 }
 
 #[cfg(feature = "avcodec")]
-#[allow(dead_code)]
 pub fn core_external_handle_to_avcodec(
     value: crate::ExternalHandle,
 ) -> dg_media_avcodec::ExternalHandle {
@@ -248,6 +356,108 @@ mod tests {
             .write_from_slice(&[4, 3, 2, 1])
             .expect("write test tensor");
         tensor
+    }
+
+    #[cfg(feature = "avcodec")]
+    mod avcodec {
+        use dg_core::{DeviceKind, MemoryDomain};
+
+        use crate::bridge::import_avcodec_handle;
+
+        #[test]
+        fn same_domain_device_handle_is_shared_without_copy() {
+            let handle = dg_media_avcodec::BufferHandle::new(
+                7,
+                dg_media_avcodec::MemoryDomain::MppBuffer,
+                16,
+            );
+            let imported =
+                import_avcodec_handle(&handle, DeviceKind::RknnNpu, MemoryDomain::MppBuffer)
+                    .expect("share device handle");
+            assert!(imported.zero_copy);
+            assert_eq!(imported.path.copy_count, 0);
+            assert_eq!(imported.path.domains, vec![MemoryDomain::MppBuffer]);
+            assert_eq!(imported.buffer.domain(), MemoryDomain::MppBuffer);
+            assert_eq!(imported.buffer.len(), 16);
+
+            // The imported buffer outlives the original avcodec handle.
+            drop(handle);
+            let clone = imported.buffer.clone();
+            drop(imported);
+            assert_eq!(clone.len(), 16);
+        }
+
+        #[test]
+        fn host_handle_imports_host_bytes_without_staging() {
+            let handle = dg_media_avcodec::BufferHandle::from_host_bytes(3, vec![1, 2, 3, 4]);
+            let imported = import_avcodec_handle(&handle, DeviceKind::Cpu, MemoryDomain::Host)
+                .expect("import host handle");
+            assert!(imported.zero_copy);
+            assert_eq!(imported.path.copy_count, 0);
+            assert_eq!(imported.buffer.read_bytes(), vec![1, 2, 3, 4]);
+        }
+
+        #[test]
+        fn missing_staging_path_fails_explicitly() {
+            let handle = dg_media_avcodec::BufferHandle::new(
+                9,
+                dg_media_avcodec::MemoryDomain::MppBuffer,
+                8,
+            );
+            let err = import_avcodec_handle(&handle, DeviceKind::Cpu, MemoryDomain::Host)
+                .expect_err("expected unsupported staging path");
+            assert!(matches!(err, dg_core::Error::Unsupported(message)
+                if message.contains("MppBuffer") && message.contains("Host")));
+        }
+
+        #[test]
+        fn staging_fallback_copies_through_registered_hook() {
+            dg_media_avcodec::register_stage_to_host_hook(
+                dg_media_avcodec::MemoryDomain::DmaBuf,
+                |handle, dst| {
+                    dst.fill(u8::try_from(handle.id()).unwrap_or(0));
+                    Ok(())
+                },
+            );
+            let handle =
+                dg_media_avcodec::BufferHandle::new(5, dg_media_avcodec::MemoryDomain::DmaBuf, 4);
+            let imported = import_avcodec_handle(&handle, DeviceKind::Cpu, MemoryDomain::Host)
+                .expect("stage to host");
+            assert!(!imported.zero_copy);
+            assert_eq!(imported.path.copy_count, 1);
+            assert_eq!(
+                imported.path.domains,
+                vec![MemoryDomain::DmaBuf, MemoryDomain::Host]
+            );
+            assert_eq!(imported.buffer.read_bytes(), vec![5, 5, 5, 5]);
+        }
+    }
+
+    #[test]
+    fn external_buffer_releases_ownership_once_after_last_clone() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let released = std::sync::Arc::new(AtomicUsize::new(0));
+        let flag = released.clone();
+        let guard = dg_core::ExternalDropGuard::new(move || {
+            flag.fetch_add(1, Ordering::SeqCst);
+        });
+        let buffer = dg_core::Buffer::from_external(
+            DeviceKind::Cpu,
+            dg_core::MemoryDomain::DmaBuf,
+            dg_core::BufferDesc::new(4, 1),
+            dg_core::ExternalHandle::from_raw(42),
+            vec![0; 4],
+            guard,
+        )
+        .expect("import external buffer");
+
+        let clone = buffer.clone();
+        drop(buffer);
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        assert_eq!(clone.external().raw, 42);
+        drop(clone);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
     }
 
     #[test]

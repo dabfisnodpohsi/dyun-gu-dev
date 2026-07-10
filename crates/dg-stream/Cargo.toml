@@ -14,9 +14,12 @@ cheetah = ["dep:dg-stream-cheetah", "dg-stream-cheetah/cheetah"]
 async-trait.workspace = true
 bytes.workspace = true
 dg-core = { path = "../dg-core" }
+dg-graph = { path = "../dg-graph" }
 dg-media = { path = "../dg-media" }
 futures.workspace = true
+inventory.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

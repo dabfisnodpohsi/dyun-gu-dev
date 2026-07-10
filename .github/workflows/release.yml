@@ -1,0 +1,65 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - aarch64-linux-android
+          - riscv64gc-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+          targets: ${{ matrix.target }}
+      - if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-riscv64-linux-gnu
+          echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - if: matrix.target == 'aarch64-linux-android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+      - if: matrix.target == 'aarch64-linux-android'
+        run: |
+          linker="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          test -x "$linker"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p dg-cli -p dg-capi
+      - name: Package
+        run: |
+          package="dyun-gu-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$package/bin" "dist/$package/lib" "dist/$package/include" "dist/$package/examples" "dist/$package/docs"
+          cp "target/${{ matrix.target }}/release/dg-cli" "dist/$package/bin/"
+          find "target/${{ matrix.target }}/release" -maxdepth 1 -type f \
+            \( -name 'libdg_capi.a' -o -name 'libdg_capi.so' \) \
+            -exec cp {} "dist/$package/lib/" \;
+          cp crates/dg-capi/include/dg_capi.h "dist/$package/include/"
+          cp examples/*.yaml "dist/$package/examples/"
+          cp README.md docs/user-guide.md "dist/$package/docs/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dyun-gu-${{ github.ref_name }}-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error

@@ -11,17 +11,24 @@ mod element;
 mod engine;
 mod error;
 mod packet;
+mod pipe;
+mod pool;
 mod registry;
 mod spec;
 
 pub use element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema, SinkCollector};
-pub use engine::{watch, DataPipe, Graph, GraphDiff, GraphReport, WatchHandle};
+pub use engine::{watch, Graph, GraphDiff, GraphReport, WatchHandle};
 pub use error::{Error, Result};
 pub use packet::{Packet, PacketMeta, PacketPayload};
+pub use pipe::{DataPipe, PipeReceiver, PipeSender, DEFAULT_QUEUE_CAPACITY};
+pub use pool::ThreadPool;
 pub use registry::{
     create_element, element_ports, find_element, registered_elements, ElementDescriptor,
 };
-pub use spec::{ConnectionSpec, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec, NodeTemplate};
+pub use spec::{
+    ConnectionSpec, ExecutionSpec, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec,
+    NodeTemplate, ParallelType,
+};
 
 // Bring built-in registrations into the inventory at link time.
 // The module is intentionally private; the submit! calls are the important side effect.

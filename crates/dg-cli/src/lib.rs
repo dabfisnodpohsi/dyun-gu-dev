@@ -89,8 +89,15 @@ fn print_report(report: &GraphReport, format: OutputFormat) -> Result<()> {
             println!("sinks: {}", summary.sinks.len());
             for sink in &summary.sinks {
                 println!(
-                    "  {}: {} tensor(s), {} detection(s)",
-                    sink.name, sink.tensors, sink.detections
+                    "  {}: {} tensor(s), {} detection(s), {} classification(s), \
+                     {} face(s), {} track(s), {} OCR result(s)",
+                    sink.name,
+                    sink.tensors,
+                    sink.detections,
+                    sink.classifications,
+                    sink.faces,
+                    sink.tracks,
+                    sink.ocr
                 );
             }
         }
@@ -108,6 +115,10 @@ struct SinkSummary {
     name: String,
     tensors: usize,
     detections: usize,
+    classifications: usize,
+    faces: usize,
+    tracks: usize,
+    ocr: usize,
 }
 
 impl From<&GraphReport> for ReportSummary {
@@ -116,6 +127,10 @@ impl From<&GraphReport> for ReportSummary {
             .sinks
             .keys()
             .chain(report.detections.keys())
+            .chain(report.classifications.keys())
+            .chain(report.faces.keys())
+            .chain(report.tracks.keys())
+            .chain(report.ocr.keys())
             .cloned()
             .collect::<Vec<_>>();
         names.sort();
@@ -125,6 +140,10 @@ impl From<&GraphReport> for ReportSummary {
             .map(|name| SinkSummary {
                 tensors: report.sinks.get(&name).map_or(0, Vec::len),
                 detections: report.detections.get(&name).map_or(0, Vec::len),
+                classifications: report.classifications.get(&name).map_or(0, Vec::len),
+                faces: report.faces.get(&name).map_or(0, Vec::len),
+                tracks: report.tracks.get(&name).map_or(0, Vec::len),
+                ocr: report.ocr.get(&name).map_or(0, Vec::len),
                 name,
             })
             .collect();
@@ -186,5 +205,13 @@ connections:
         run_graph(&path, OutputFormat::Json).expect("run config");
         list_elements().expect("list elements");
         fs::remove_file(path).expect("remove config");
+    }
+
+    #[test]
+    fn documented_multi_algorithm_example_runs() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/mock-multi-algorithm.yaml");
+        validate_graph(&path).expect("validate documented example");
+        run_graph(&path, OutputFormat::Json).expect("run documented example");
     }
 }

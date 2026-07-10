@@ -7,6 +7,8 @@
 
 #[cfg(feature = "backend")]
 mod backend;
+pub mod convert;
+pub mod validate;
 
 pub use dg_runtime::SophonOptions;
 

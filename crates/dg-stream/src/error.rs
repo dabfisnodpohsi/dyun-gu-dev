@@ -12,6 +12,8 @@ pub enum Error {
     Closed,
     #[error("end of stream")]
     EndOfStream,
+    #[error("backpressure overflow: {0}")]
+    Overflow(String),
     #[error("buffer error: {0}")]
     Buffer(String),
     #[error("media error: {0}")]

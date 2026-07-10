@@ -171,6 +171,107 @@ pub enum CodecConfigError {
     },
 }
 
+impl CodecId {
+    /// Codec configuration requirement for streaming this codec.
+    pub const fn config_requirement(self) -> CodecConfigRequirement {
+        match self {
+            Self::H264 | Self::H265 | Self::H266 | Self::AAC => CodecConfigRequirement::Required,
+            Self::AV1 | Self::VP8 | Self::VP9 | Self::MP3 | Self::Opus => {
+                CodecConfigRequirement::Optional
+            }
+            Self::MJPEG | Self::ADPCM | Self::G711A | Self::G711U | Self::MP2 | Self::Unknown => {
+                CodecConfigRequirement::None
+            }
+        }
+    }
+}
+
+impl CodecExtradata {
+    /// Converts the extradata into a codec config payload.
+    pub fn to_config_payload(&self) -> CodecConfigPayload {
+        match self.clone() {
+            Self::None | Self::Raw(_) => CodecConfigPayload::None,
+            Self::H264 { sps, pps, avcc } => CodecConfigPayload::H264 { sps, pps, avcc },
+            Self::H265 {
+                vps,
+                sps,
+                pps,
+                hvcc,
+            } => CodecConfigPayload::H265 {
+                vps,
+                sps,
+                pps,
+                hvcc,
+            },
+            Self::H266 { vps, sps, pps } => CodecConfigPayload::H266 { vps, sps, pps },
+            Self::AAC { asc } => CodecConfigPayload::AAC { asc },
+            Self::AV1 {
+                sequence_header,
+                codec_config,
+            } => CodecConfigPayload::AV1 {
+                sequence_header,
+                codec_config,
+            },
+            Self::VP8 { config } => CodecConfigPayload::VP8 { config },
+            Self::VP9 { config } => CodecConfigPayload::VP9 { config },
+            Self::MP3 { side_info } => CodecConfigPayload::MP3 { side_info },
+            Self::Opus {
+                fmtp,
+                channel_mapping,
+            } => CodecConfigPayload::Opus {
+                fmtp,
+                channel_mapping,
+            },
+        }
+    }
+
+    /// Returns the missing-config detail if this extradata does not satisfy the codec.
+    fn missing_detail(&self, codec: CodecId) -> Option<&'static str> {
+        match codec {
+            CodecId::H264 => match self {
+                Self::H264 { sps, pps, avcc } => {
+                    if avcc.is_some() || (!sps.is_empty() && !pps.is_empty()) {
+                        None
+                    } else {
+                        Some("H264 requires sps+pps or avcc")
+                    }
+                }
+                _ => Some("H264 requires sps/pps extradata"),
+            },
+            CodecId::H265 => match self {
+                Self::H265 {
+                    vps,
+                    sps,
+                    pps,
+                    hvcc,
+                } => {
+                    if hvcc.is_some() || (!vps.is_empty() && !sps.is_empty() && !pps.is_empty()) {
+                        None
+                    } else {
+                        Some("H265 requires vps+sps+pps or hvcc")
+                    }
+                }
+                _ => Some("H265 requires vps/sps/pps extradata"),
+            },
+            CodecId::H266 => match self {
+                Self::H266 { vps, sps, pps } => {
+                    if !vps.is_empty() && !sps.is_empty() && !pps.is_empty() {
+                        None
+                    } else {
+                        Some("H266 requires vps+sps+pps")
+                    }
+                }
+                _ => Some("H266 requires vps/sps/pps extradata"),
+            },
+            CodecId::AAC => match self {
+                Self::AAC { asc } if !asc.is_empty() => None,
+                _ => Some("AAC requires a non-empty AudioSpecificConfig"),
+            },
+            _ => None,
+        }
+    }
+}
+
 /// Track-level codec and timing metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackInfo {
@@ -210,5 +311,33 @@ impl TrackInfo {
             extradata: CodecExtradata::None,
             readiness: TrackReadiness::NotReady,
         }
+    }
+
+    /// Codec config requirement and current payload for this track.
+    pub fn codec_config_view(&self) -> CodecConfigView {
+        CodecConfigView {
+            requirement: self.codec.config_requirement(),
+            payload: self.extradata.to_config_payload(),
+        }
+    }
+
+    /// Validates that required codec configuration is present.
+    pub fn validate_codec_config(&self) -> core::result::Result<(), CodecConfigError> {
+        if self.codec.config_requirement() != CodecConfigRequirement::Required {
+            return Ok(());
+        }
+        match self.extradata.missing_detail(self.codec) {
+            None => Ok(()),
+            Some(detail) => Err(CodecConfigError::MissingRequiredConfig {
+                track_id: self.track_id,
+                codec: self.codec,
+                detail,
+            }),
+        }
+    }
+
+    /// A track is streamable when it is `Ready` and its codec config is complete.
+    pub fn is_streamable(&self) -> bool {
+        self.readiness == TrackReadiness::Ready && self.validate_codec_config().is_ok()
     }
 }

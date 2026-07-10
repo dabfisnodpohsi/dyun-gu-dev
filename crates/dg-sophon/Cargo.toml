@@ -9,7 +9,9 @@ build = "build.rs"
 
 [features]
 default = []
-backend = []
+backend = ["dep:libc"]
+# Build for on-chip (SoC) deployment; the default targets Host (PCIe).
+soc = ["backend"]
 
 [dependencies]
 dg-core = { path = "../dg-core" }
@@ -17,6 +19,7 @@ dg-runtime = { path = "../dg-runtime" }
 inventory.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+libc = { workspace = true, optional = true }
 
 [build-dependencies]
 bindgen.workspace = true
