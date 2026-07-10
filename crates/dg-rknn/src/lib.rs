@@ -7,8 +7,13 @@
 
 #[cfg(feature = "backend")]
 mod backend;
+mod io;
 
 pub use dg_runtime::RknnOptions;
+pub use io::{
+    depad_bytes, pad_bytes, padded_byte_len, quantization_from_rknn, select_io_path,
+    strides_from_w_stride, IoPath,
+};
 
 #[cfg(feature = "backend")]
 pub use backend::{backend_enabled, RknnBackend};
