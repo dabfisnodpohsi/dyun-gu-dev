@@ -57,6 +57,17 @@ fn scheme_of(url: &str) -> Result<&str> {
     }
 }
 
+pub(crate) fn validate_endpoint_url(protocol: StreamProtocol, url: &str) -> Result<()> {
+    let scheme = scheme_of(url)?;
+    if scheme == "mock" || protocol.network_schemes().contains(&scheme) {
+        return Ok(());
+    }
+    Err(Error::InvalidArgument(format!(
+        "scheme `{scheme}` is not supported by the {} protocol",
+        protocol.label()
+    )))
+}
+
 /// Opens a pull endpoint for `protocol` at `url`.
 ///
 /// `mock://` URLs resolve to the in-process [`MemoryStreamHub`]; protocol
@@ -73,6 +84,7 @@ pub fn open_pull(
             protocol.label()
         )));
     }
+    validate_endpoint_url(protocol, url)?;
     let scheme = scheme_of(url)?;
     if scheme == "mock" {
         let hub = MemoryStreamHub::global();
@@ -104,6 +116,7 @@ pub fn open_push(
             protocol.label()
         )));
     }
+    validate_endpoint_url(protocol, url)?;
     let scheme = scheme_of(url)?;
     if scheme == "mock" {
         let sink = MemoryStreamHub::global().publish(url, options)?;
