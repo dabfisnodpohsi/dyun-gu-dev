@@ -575,7 +575,7 @@ impl TensorRtBackend {
         let mut output_infos = Vec::with_capacity(self.outputs.len());
         for binding in &self.outputs {
             let dims = context.tensor_shape(&binding.name)?;
-            let (shape, _) = engine_dims_to_shape(&dims, &binding.name)?;
+            let shape = dims_to_shape(&dims, &binding.name)?;
             output_infos.push(
                 TensorInfo::new(shape, binding.dtype)
                     .with_name(binding.name.clone())
