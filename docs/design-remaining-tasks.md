@@ -42,7 +42,7 @@
 | CFG-06 | 已完成 | GraphSpec `defaults` 合并 | 支持全局 device/precision/backend 默认值；node override 优先；与 template/variable/include 的优先级有测试和文档 | 无 |
 | CFG-07 | 已完成 | 对齐 §8.3 标准字段 | 支持或兼容 `type`/`edges`，并使设计文档中的规范示例可解析；保留现有 `kind`/`connections` 的兼容性 | CFG-06 |
 | CFG-08 | 未开始 | per-node `threads` 与 `sink` 语义 | `threads >= 1` 控制 element 实例/worker；`sink` 明确终止输出连通要求；配置、执行和错误路径有测试 | CFG-01、CFG-07 |
-| CFG-09 | 未开始 | template/variable/include 引用严格校验 | 未知 template、未解析 `${var}`、无 base dir 的 include 和 include 环均在加载期给出字段级错误 | 无 |
+| CFG-09 | 已完成 | template/variable/include 引用严格校验 | 未知 template、未解析 `${var}`、无 base dir 的 include 和 include 环均在加载期给出字段级错误 | 无 |
 | HOT-01 | 已完成 | CLI 文件 watch 入口 | `dg run --watch` 监听配置、输出 diff、拒绝非法 reload，并更新用户指南 | 无 |
 | HOT-02 | 未开始 | 运行中 Graph 的增量热更新 | 对运行中的图增删/替换节点与边；未受影响节点保持运行；不可热改节点安全局部 drain + rebuild；有状态连续性测试 | CFG-01、HOT-01 |
 | CFG-10 | 可选 | XML 配置支持 | 仅在确认需要时通过 `quick-xml` 增加 XML 加载和 round-trip property test | 无 |
