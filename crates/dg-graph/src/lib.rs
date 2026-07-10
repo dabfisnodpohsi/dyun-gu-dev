@@ -32,8 +32,8 @@ pub use schema::{
     all_element_schemas, element_params_schema, params_json_schema, ParamField, ParamType,
 };
 pub use spec::{
-    ConnectionSpec, ExecutionSpec, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec,
-    NodeTemplate, ParallelType,
+    ConnectionSpec, DefaultsSpec, ExecutionSpec, GraphFormat, GraphSpec, GraphSpecBuilder,
+    NodeSpec, NodeTemplate, ParallelType,
 };
 
 // Bring built-in registrations into the inventory at link time.

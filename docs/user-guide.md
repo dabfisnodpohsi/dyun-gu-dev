@@ -57,6 +57,21 @@ validator 的 element 还会在加载阶段检查参数。内置 `source`、`inp
 但不会初始化模型或硬件。
 `includes`、`variables` 与 `templates` 可用于拆分和复用配置。
 
+顶层 `defaults` 可为支持这些字段的 element（当前为 `inference`）提供
+`backend`、`device` 和 `precision` 默认值：
+
+```yaml
+defaults:
+  backend: mock
+  device: cpu
+  precision: f32
+```
+
+参数优先级为 **node 参数 > template 参数 > 全局 defaults**；defaults 只填充
+节点和模板都未提供的字段，不会覆盖已有值。include 文件中的 defaults 低于顶层
+配置，顶层文件提供的值优先。`${var}` 变量会在 defaults 注入后替换，因此默认值
+也可以引用变量。
+
 执行策略在顶层 `execution` 配置：
 
 ```yaml

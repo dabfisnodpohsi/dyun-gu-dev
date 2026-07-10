@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use crate::element::PortSchema;
 use crate::error::{Error, Result};
 use crate::pipe::DEFAULT_QUEUE_CAPACITY;
-use crate::registry::{element_ports, validate_element};
+use crate::registry::{element_ports, find_element, validate_element};
 
 const DEFAULT_API_VERSION: &str = "dg/v1";
 const DEFAULT_KIND: &str = "Graph";
@@ -60,6 +60,14 @@ pub struct NodeTemplate {
     pub template: Option<String>,
     #[serde(default)]
     pub params: Value,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DefaultsSpec {
+    pub backend: Option<String>,
+    pub device: Option<String>,
+    pub precision: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -126,6 +134,8 @@ pub struct GraphSpec {
     #[serde(default)]
     pub variables: BTreeMap<String, Value>,
     #[serde(default)]
+    pub defaults: DefaultsSpec,
+    #[serde(default)]
     pub templates: BTreeMap<String, NodeTemplate>,
     #[serde(default)]
     pub allow_cycles: bool,
@@ -152,6 +162,7 @@ impl Default for GraphSpec {
             kind: default_kind(),
             includes: Vec::new(),
             variables: BTreeMap::new(),
+            defaults: DefaultsSpec::default(),
             templates: BTreeMap::new(),
             allow_cycles: false,
             execution: ExecutionSpec::default(),
@@ -236,6 +247,7 @@ impl GraphSpec {
         merged.merge_included(self.clone());
         merged.includes.clear();
         merged.apply_templates();
+        merged.apply_defaults();
         merged.apply_variables();
         merged.validate()?;
         Ok(merged)
@@ -243,6 +255,9 @@ impl GraphSpec {
 
     fn merge_included(&mut self, other: GraphSpec) {
         self.variables.extend(other.variables);
+        self.defaults.backend = other.defaults.backend.or(self.defaults.backend.take());
+        self.defaults.device = other.defaults.device.or(self.defaults.device.take());
+        self.defaults.precision = other.defaults.precision.or(self.defaults.precision.take());
         self.templates.extend(other.templates);
         self.nodes.extend(other.nodes);
         self.connections.extend(other.connections);
@@ -258,6 +273,37 @@ impl GraphSpec {
                 if let Some(template) = self.templates.get(template_name) {
                     node.kind = template.kind.clone();
                     node.params = merge_values(template.params.clone(), node.params.clone());
+                }
+            }
+        }
+    }
+
+    fn apply_defaults(&mut self) {
+        let defaults = self.defaults.clone();
+        for node in &mut self.nodes {
+            let Some(descriptor) = find_element(&node.kind) else {
+                continue;
+            };
+            let allowed = |name: &str| descriptor.params.iter().any(|field| field.name == name);
+            let mut values = [
+                ("backend", defaults.backend.as_deref()),
+                ("device", defaults.device.as_deref()),
+                ("precision", defaults.precision.as_deref()),
+            ];
+            if !values.iter().any(|(_, value)| value.is_some()) {
+                continue;
+            }
+            if node.params.is_null() {
+                node.params = Value::Object(Map::new());
+            }
+            let Value::Object(params) = &mut node.params else {
+                continue;
+            };
+            for (name, value) in &mut values {
+                if let Some(value) = value.take() {
+                    if allowed(name) && !params.contains_key(*name) {
+                        params.insert((*name).to_string(), Value::String(value.to_string()));
+                    }
                 }
             }
         }
@@ -541,6 +587,11 @@ impl GraphSpecBuilder {
 
     pub fn execution(mut self, execution: ExecutionSpec) -> Self {
         self.spec.execution = execution;
+        self
+    }
+
+    pub fn defaults(mut self, defaults: DefaultsSpec) -> Self {
+        self.spec.defaults = defaults;
         self
     }
 
