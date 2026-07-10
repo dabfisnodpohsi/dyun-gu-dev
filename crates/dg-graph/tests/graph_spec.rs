@@ -1,9 +1,12 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dg_graph::{
-    ConnectionSpec, Graph, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec, NodeTemplate,
+    watch, ConnectionSpec, Graph, GraphFormat, GraphSpec, GraphSpecBuilder, NodeSpec, NodeTemplate,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -58,6 +61,107 @@ fn sample_spec() -> GraphSpec {
         .connect("infer.out -> sink.in")
         .build()
         .expect("build sample spec")
+}
+
+fn variant_spec(
+    source_count: usize,
+    source_start: f64,
+    echo_inputs: bool,
+    with_extra_pipeline: bool,
+) -> GraphSpec {
+    let mut builder = GraphSpecBuilder::new()
+        .add_node(NodeSpec {
+            name: "source".to_string(),
+            kind: "source".to_string(),
+            template: None,
+            params: json!({
+                "count": source_count,
+                "shape": [1, 4],
+                "start": source_start
+            }),
+        })
+        .add_node(NodeSpec {
+            name: "infer".to_string(),
+            kind: "mock_inference".to_string(),
+            template: None,
+            params: json!({
+                "shape": [1, 4],
+                "echo_inputs": echo_inputs
+            }),
+        })
+        .add_node(NodeSpec {
+            name: "sink".to_string(),
+            kind: "sink".to_string(),
+            template: None,
+            params: json!({}),
+        })
+        .connect("source.out -> infer.in")
+        .connect("infer.out -> sink.in");
+    if with_extra_pipeline {
+        builder = builder
+            .add_node(NodeSpec {
+                name: "extra_source".to_string(),
+                kind: "source".to_string(),
+                template: None,
+                params: json!({"count": 0, "shape": [1, 4]}),
+            })
+            .add_node(NodeSpec {
+                name: "extra_sink".to_string(),
+                kind: "sink".to_string(),
+                template: None,
+                params: json!({}),
+            })
+            .connect("extra_source.out -> extra_sink.in");
+    }
+    builder.build().expect("build variant graph spec")
+}
+
+fn semantic_nodes(spec: &GraphSpec) -> BTreeMap<String, NodeSpec> {
+    spec.nodes
+        .iter()
+        .map(|node| (node.name.clone(), node.clone()))
+        .collect()
+}
+
+fn semantic_connections(spec: &GraphSpec) -> BTreeSet<String> {
+    spec.connections.iter().cloned().collect()
+}
+
+proptest! {
+    #[test]
+    fn graph_diff_apply_preserves_spec_semantics(
+        source_count_a in 0_usize..4,
+        source_count_b in 0_usize..4,
+        source_start_a in 0_i32..8,
+        source_start_b in 0_i32..8,
+        echo_a in any::<bool>(),
+        echo_b in any::<bool>(),
+        extra_a in any::<bool>(),
+        extra_b in any::<bool>(),
+    ) {
+        let a = variant_spec(
+            source_count_a,
+            f64::from(source_start_a),
+            echo_a,
+            extra_a,
+        );
+        let b = variant_spec(
+            source_count_b,
+            f64::from(source_start_b),
+            echo_b,
+            extra_b,
+        );
+        let diff = Graph::diff(&a, &b);
+        let mut graph = Graph::new(a.clone()).expect("build source graph");
+        diff.clone().apply(&mut graph).expect("apply graph diff");
+
+        prop_assert_eq!(semantic_nodes(graph.spec()), semantic_nodes(&b));
+        prop_assert_eq!(semantic_connections(graph.spec()), semantic_connections(&b));
+
+        let mut reloaded = Graph::new(a.clone()).expect("build source graph");
+        let reloaded_diff = reloaded.reload(b.clone()).expect("reload graph");
+        prop_assert_eq!(reloaded_diff, diff);
+    }
 }
 
 #[test]
@@ -203,6 +307,45 @@ connections:
     assert_eq!(spec.nodes[0].params["start"], json!(5));
     assert_eq!(spec.nodes[1].kind, "mock_inference");
     assert_eq!(spec.nodes[1].params["shape"], json!([1, 4]));
+}
+
+#[test]
+fn graph_watch_reports_valid_reload_and_diff() {
+    let root = unique_temp_dir("dg-graph-watch");
+    fs::create_dir_all(&root).expect("create temp dir");
+    let path = root.join("graph.yaml");
+    let first = variant_spec(0, 1.0, true, false);
+    let second = variant_spec(1, 2.0, false, true);
+    fs::write(
+        &path,
+        first
+            .to_string_with_format(GraphFormat::Yaml)
+            .expect("serialize initial graph"),
+    )
+    .expect("write initial graph");
+
+    let (sender, receiver) = mpsc::channel();
+    let handle = watch(&path, move |event| {
+        sender.send(event).expect("send watch event");
+    })
+    .expect("start graph watch");
+    std::thread::sleep(Duration::from_millis(75));
+    fs::write(
+        &path,
+        second
+            .to_string_with_format(GraphFormat::Yaml)
+            .expect("serialize updated graph"),
+    )
+    .expect("write updated graph");
+
+    let event = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive graph watch event")
+        .expect("valid graph watch event");
+    assert_eq!(event.0, second);
+    assert_eq!(event.1, Graph::diff(&first, &second));
+    handle.stop();
+    fs::remove_dir_all(root).expect("remove watch temp dir");
 }
 
 #[test]

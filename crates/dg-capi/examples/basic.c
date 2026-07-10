@@ -27,9 +27,17 @@ int main(void) {
   struct DgTensor *output = NULL;
   const uint8_t *output_data = NULL;
   size_t output_length = 0;
+  size_t added_nodes = 0;
+  size_t removed_nodes = 0;
+  size_t updated_nodes = 0;
+  size_t added_connections = 0;
+  size_t removed_connections = 0;
 
   if (dg_engine_create(&engine) != Ok ||
       dg_engine_load_string(engine, Yaml, spec) != Ok ||
+      dg_engine_diff_string(engine, Yaml, spec, &added_nodes, &removed_nodes,
+                            &updated_nodes, &added_connections,
+                            &removed_connections) != Ok ||
       dg_engine_build(engine) != Ok ||
       dg_tensor_create((const uint8_t *)input, sizeof(input), shape, 2, F32, Nc, Cpu, &tensor) != Ok ||
       dg_engine_push(engine, tensor) != Ok ||

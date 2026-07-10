@@ -148,6 +148,41 @@ enum DgStatus dg_engine_load_string(struct DgEngine *engine,
 enum DgStatus dg_engine_load_file(struct DgEngine *engine, const char *path);
 
 /**
+ * Reloads a graph specification from a UTF-8 string and invalidates the built graph.
+ */
+enum DgStatus dg_engine_reload_string(struct DgEngine *engine,
+                                      enum DgGraphFormat format,
+                                      const char *content);
+
+/**
+ * Reloads a graph specification from a UTF-8 path and invalidates the built graph.
+ */
+enum DgStatus dg_engine_reload_file(struct DgEngine *engine, const char *path);
+
+/**
+ * Computes node and connection changes against a UTF-8 graph specification.
+ */
+enum DgStatus dg_engine_diff_string(const struct DgEngine *engine,
+                                    enum DgGraphFormat format,
+                                    const char *content,
+                                    size_t *out_added_nodes,
+                                    size_t *out_removed_nodes,
+                                    size_t *out_updated_nodes,
+                                    size_t *out_added_connections,
+                                    size_t *out_removed_connections);
+
+/**
+ * Computes node and connection changes against a UTF-8 graph file.
+ */
+enum DgStatus dg_engine_diff_file(const struct DgEngine *engine,
+                                  const char *path,
+                                  size_t *out_added_nodes,
+                                  size_t *out_removed_nodes,
+                                  size_t *out_updated_nodes,
+                                  size_t *out_added_connections,
+                                  size_t *out_removed_connections);
+
+/**
  * Adds a node programmatically. `params_json` may be null for an empty object.
  */
 enum DgStatus dg_engine_add_node(struct DgEngine *engine,

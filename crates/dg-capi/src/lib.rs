@@ -13,7 +13,7 @@ use dg_core::{
     Buffer, BufferDesc, CpuDevice, DataFormat, DataType, DeviceKind, ExternalDropGuard,
     ExternalHandle, MemoryDomain, Shape, Tensor, TensorDesc, TypeCode,
 };
-use dg_graph::{Graph, GraphFormat, GraphSpec, NodeSpec};
+use dg_graph::{Graph, GraphDiff, GraphFormat, GraphSpec, NodeSpec};
 use serde_json::{Map, Value};
 
 thread_local! {
@@ -219,6 +219,53 @@ fn ffi_result<T>(operation: impl FnOnce() -> Result<T, (DgStatus, String)>) -> R
 
 fn graph_error(error: impl std::fmt::Display) -> (DgStatus, String) {
     (DgStatus::ParseError, error.to_string())
+}
+
+fn write_diff_counts(
+    diff: &GraphDiff,
+    out_added_nodes: *mut usize,
+    out_removed_nodes: *mut usize,
+    out_updated_nodes: *mut usize,
+    out_added_connections: *mut usize,
+    out_removed_connections: *mut usize,
+) -> Result<(), (DgStatus, String)> {
+    validate_diff_outputs(
+        out_added_nodes,
+        out_removed_nodes,
+        out_updated_nodes,
+        out_added_connections,
+        out_removed_connections,
+    )?;
+    // SAFETY: all output pointers were checked non-null by `validate_diff_outputs`.
+    unsafe {
+        out_added_nodes.write(diff.added_nodes.len());
+        out_removed_nodes.write(diff.removed_nodes.len());
+        out_updated_nodes.write(diff.updated_nodes.len());
+        out_added_connections.write(diff.added_connections.len());
+        out_removed_connections.write(diff.removed_connections.len());
+    }
+    Ok(())
+}
+
+fn validate_diff_outputs(
+    out_added_nodes: *mut usize,
+    out_removed_nodes: *mut usize,
+    out_updated_nodes: *mut usize,
+    out_added_connections: *mut usize,
+    out_removed_connections: *mut usize,
+) -> Result<(), (DgStatus, String)> {
+    if out_added_nodes.is_null()
+        || out_removed_nodes.is_null()
+        || out_updated_nodes.is_null()
+        || out_added_connections.is_null()
+        || out_removed_connections.is_null()
+    {
+        return Err((
+            DgStatus::NullPointer,
+            "diff output pointer is null".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn format_from_c(format: DgGraphFormat) -> GraphFormat {
@@ -447,6 +494,144 @@ pub unsafe extern "C" fn dg_engine_load_file(
         engine.inner.spec = spec;
         engine.inner.invalidate();
         Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Reloads a graph specification from a UTF-8 string and invalidates the built graph.
+#[no_mangle]
+pub unsafe extern "C" fn dg_engine_reload_string(
+    engine: *mut DgEngine,
+    format: DgGraphFormat,
+    content: *const c_char,
+) -> DgStatus {
+    match ffi_result(|| {
+        if engine.is_null() {
+            return Err((DgStatus::NullPointer, "engine pointer is null".to_string()));
+        }
+        let content = unsafe { c_string(content)? }
+            .to_str()
+            .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        let spec =
+            GraphSpec::from_str_with_format(content, format_from_c(format)).map_err(graph_error)?;
+        spec.validate().map_err(graph_error)?;
+        let engine = unsafe { &mut *engine };
+        engine.inner.spec = spec;
+        engine.inner.invalidate();
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Reloads a graph specification from a UTF-8 path and invalidates the built graph.
+#[no_mangle]
+pub unsafe extern "C" fn dg_engine_reload_file(
+    engine: *mut DgEngine,
+    path: *const c_char,
+) -> DgStatus {
+    match ffi_result(|| {
+        if engine.is_null() {
+            return Err((DgStatus::NullPointer, "engine pointer is null".to_string()));
+        }
+        let path = unsafe { c_string(path)? }
+            .to_str()
+            .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        let spec = GraphSpec::load_from_path(Path::new(path)).map_err(graph_error)?;
+        let engine = unsafe { &mut *engine };
+        engine.inner.spec = spec;
+        engine.inner.invalidate();
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Computes node and connection changes against a UTF-8 graph specification.
+#[no_mangle]
+pub unsafe extern "C" fn dg_engine_diff_string(
+    engine: *const DgEngine,
+    format: DgGraphFormat,
+    content: *const c_char,
+    out_added_nodes: *mut usize,
+    out_removed_nodes: *mut usize,
+    out_updated_nodes: *mut usize,
+    out_added_connections: *mut usize,
+    out_removed_connections: *mut usize,
+) -> DgStatus {
+    match ffi_result(|| {
+        if engine.is_null() {
+            return Err((DgStatus::NullPointer, "engine pointer is null".to_string()));
+        }
+        validate_diff_outputs(
+            out_added_nodes,
+            out_removed_nodes,
+            out_updated_nodes,
+            out_added_connections,
+            out_removed_connections,
+        )?;
+        let content = unsafe { c_string(content)? }
+            .to_str()
+            .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        let spec =
+            GraphSpec::from_str_with_format(content, format_from_c(format)).map_err(graph_error)?;
+        spec.validate().map_err(graph_error)?;
+        let engine = unsafe { &*engine };
+        let diff = Graph::diff(&engine.inner.spec, &spec);
+        write_diff_counts(
+            &diff,
+            out_added_nodes,
+            out_removed_nodes,
+            out_updated_nodes,
+            out_added_connections,
+            out_removed_connections,
+        )
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Computes node and connection changes against a UTF-8 graph file.
+#[no_mangle]
+pub unsafe extern "C" fn dg_engine_diff_file(
+    engine: *const DgEngine,
+    path: *const c_char,
+    out_added_nodes: *mut usize,
+    out_removed_nodes: *mut usize,
+    out_updated_nodes: *mut usize,
+    out_added_connections: *mut usize,
+    out_removed_connections: *mut usize,
+) -> DgStatus {
+    match ffi_result(|| {
+        if engine.is_null() {
+            return Err((DgStatus::NullPointer, "engine pointer is null".to_string()));
+        }
+        validate_diff_outputs(
+            out_added_nodes,
+            out_removed_nodes,
+            out_updated_nodes,
+            out_added_connections,
+            out_removed_connections,
+        )?;
+        let path = unsafe { c_string(path)? }
+            .to_str()
+            .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        let spec = GraphSpec::load_from_path(Path::new(path)).map_err(graph_error)?;
+        let engine = unsafe { &*engine };
+        let diff = Graph::diff(&engine.inner.spec, &spec);
+        write_diff_counts(
+            &diff,
+            out_added_nodes,
+            out_removed_nodes,
+            out_updated_nodes,
+            out_added_connections,
+            out_removed_connections,
+        )
     }) {
         Ok(()) => DgStatus::Ok,
         Err(status) => status,
@@ -931,6 +1116,40 @@ connections:
         std::env::temp_dir().join(format!("dg-capi-invalid-{nanos}.yaml"))
     }
 
+    fn updated_graph_spec() -> CString {
+        CString::new(
+            r#"apiVersion: dg/v1
+kind: Graph
+nodes:
+  - name: input
+    kind: input
+    params: {}
+  - name: infer
+    kind: mock_inference
+    params:
+      shape: [1, 4]
+      echo_inputs: false
+      fill_value: 7
+  - name: sink
+    kind: sink
+    params: {}
+  - name: extra_source
+    kind: source
+    params:
+      count: 0
+      shape: [1, 4]
+  - name: extra_sink
+    kind: sink
+    params: {}
+connections:
+  - input.out -> infer.in
+  - infer.out -> sink.in
+  - extra_source.out -> extra_sink.in
+"#,
+        )
+        .expect("valid updated graph spec")
+    }
+
     #[test]
     fn c_abi_push_poll_round_trip() {
         let mut engine = ptr::null_mut();
@@ -1027,6 +1246,58 @@ connections: []
         assert!(!dg_last_error().is_null());
         unsafe { dg_engine_free(engine) };
         fs::remove_file(path).expect("remove invalid graph");
+    }
+
+    #[test]
+    fn c_abi_diff_and_reload_invalidate_built_graph() {
+        let mut engine = ptr::null_mut();
+        assert_eq!(unsafe { dg_engine_create(&mut engine) }, DgStatus::Ok);
+        let initial = graph_spec();
+        let updated = updated_graph_spec();
+        assert_eq!(
+            unsafe { dg_engine_load_string(engine, DgGraphFormat::Yaml, initial.as_ptr()) },
+            DgStatus::Ok
+        );
+        assert_eq!(unsafe { dg_engine_build(engine) }, DgStatus::Ok);
+
+        let mut added_nodes = 0;
+        let mut removed_nodes = 0;
+        let mut updated_nodes = 0;
+        let mut added_connections = 0;
+        let mut removed_connections = 0;
+        assert_eq!(
+            unsafe {
+                dg_engine_diff_string(
+                    engine,
+                    DgGraphFormat::Yaml,
+                    updated.as_ptr(),
+                    &mut added_nodes,
+                    &mut removed_nodes,
+                    &mut updated_nodes,
+                    &mut added_connections,
+                    &mut removed_connections,
+                )
+            },
+            DgStatus::Ok
+        );
+        assert_eq!(added_nodes, 2);
+        assert_eq!(removed_nodes, 0);
+        assert_eq!(updated_nodes, 1);
+        assert_eq!(added_connections, 1);
+        assert_eq!(removed_connections, 0);
+
+        let invalid = CString::new("not a graph").expect("valid invalid spec bytes");
+        assert_eq!(
+            unsafe { dg_engine_reload_string(engine, DgGraphFormat::Yaml, invalid.as_ptr()) },
+            DgStatus::ParseError
+        );
+        assert!(!dg_last_error().is_null());
+        assert_eq!(
+            unsafe { dg_engine_reload_string(engine, DgGraphFormat::Yaml, updated.as_ptr()) },
+            DgStatus::Ok
+        );
+        assert_eq!(unsafe { dg_engine_run(engine) }, DgStatus::NotBuilt);
+        unsafe { dg_engine_free(engine) };
     }
 
     #[test]

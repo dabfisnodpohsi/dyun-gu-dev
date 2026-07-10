@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{self, sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use dg_core::Tensor;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::element::{Element, ElementHandle, ElementIo};
 use crate::error::{Error, Result};
@@ -335,12 +337,94 @@ impl GraphSpec {
     }
 }
 
-pub struct WatchHandle;
-
-impl WatchHandle {
-    pub fn stop(self) {}
+/// Controls a background graph specification file watcher.
+pub struct WatchHandle {
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
-pub fn watch(_spec: &GraphSpec) -> Result<WatchHandle> {
-    Ok(WatchHandle)
+impl WatchHandle {
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for WatchHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// Watches a graph specification file and reports validated changes.
+pub fn watch(
+    path: impl AsRef<Path>,
+    mut callback: impl FnMut(Result<(GraphSpec, GraphDiff)>) + Send + 'static,
+) -> Result<WatchHandle> {
+    let path = path.as_ref().to_path_buf();
+    let mut modified = fs::metadata(&path)?.modified()?;
+    let mut previous = GraphSpec::load_from_path(&path)?;
+    let (stop, stop_receiver) = mpsc::channel();
+    let thread = thread::spawn(move || {
+        const POLL_INTERVAL: Duration = Duration::from_millis(50);
+        loop {
+            match stop_receiver.recv_timeout(POLL_INTERVAL) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            let metadata = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    notify_watch(&mut callback, Err(error.into()));
+                    continue;
+                }
+            };
+            let current_modified = match metadata.modified() {
+                Ok(modified) => modified,
+                Err(error) => {
+                    notify_watch(&mut callback, Err(error.into()));
+                    continue;
+                }
+            };
+            if current_modified == modified {
+                continue;
+            }
+
+            match GraphSpec::load_from_path(&path) {
+                Ok(spec) => {
+                    let diff = Graph::diff(&previous, &spec);
+                    previous = spec.clone();
+                    modified = current_modified;
+                    notify_watch(&mut callback, Ok((spec, diff)));
+                }
+                Err(error) => {
+                    modified = current_modified;
+                    error!(path = %path.display(), error = %error, "graph watch reload failed");
+                    notify_watch(&mut callback, Err(error));
+                }
+            }
+        }
+    });
+    Ok(WatchHandle {
+        stop: Some(stop),
+        thread: Some(thread),
+    })
+}
+
+fn notify_watch(
+    callback: &mut impl FnMut(Result<(GraphSpec, GraphDiff)>),
+    result: Result<(GraphSpec, GraphDiff)>,
+) {
+    if catch_unwind(AssertUnwindSafe(|| callback(result))).is_err() {
+        error!("graph watch callback panicked");
+    }
 }
