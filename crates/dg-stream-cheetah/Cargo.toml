@@ -1,0 +1,16 @@
+[package]
+name = "dg-stream-cheetah"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+cheetah = ["dep:cheetah-codec", "dep:cheetah-runtime-api", "dep:cheetah-sdk"]
+
+[dependencies]
+cheetah-codec = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-codec", default-features = false, features = ["std"], optional = true }
+cheetah-runtime-api = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-runtime-api", default-features = false, optional = true }
+cheetah-sdk = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-sdk", default-features = false, features = ["macros"], optional = true }

@@ -358,10 +358,10 @@ impl SchedulerState {
             .collect::<Vec<_>>();
 
         if device_indexes.is_empty() {
-            return if request.device_id.is_some() {
+            return if let Some(id) = request.device_id {
                 Err(Error::UnknownDevice {
                     kind: request.kind,
-                    id: request.device_id.expect("checked is_some"),
+                    id,
                 })
             } else {
                 Err(Error::NoMatchingDevice { kind: request.kind })

@@ -47,4 +47,53 @@ impl Packet {
             PacketPayload::EndOfStream => None,
         }
     }
+
+    pub fn into_tensor(self) -> Option<Tensor> {
+        match Arc::try_unwrap(self.payload) {
+            Ok(PacketPayload::Tensor(tensor)) => Some(tensor),
+            Ok(PacketPayload::EndOfStream) => None,
+            Err(payload) => match payload.as_ref() {
+                PacketPayload::Tensor(tensor) => Some(tensor.clone()),
+                PacketPayload::EndOfStream => None,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dg_core::{CpuDevice, DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc};
+
+    use super::Packet;
+
+    fn test_tensor() -> Tensor {
+        let device = CpuDevice::new();
+        let desc = TensorDesc::new(
+            Shape::new([1, 4]),
+            DataType::U8,
+            DataFormat::NC,
+            DeviceKind::Cpu,
+        );
+        let tensor = Tensor::allocate(&device, desc).expect("allocate test tensor");
+        tensor
+            .buffer()
+            .write_from_slice(&[1, 2, 3, 4])
+            .expect("write test tensor");
+        tensor
+    }
+
+    #[test]
+    fn into_tensor_preserves_shared_tensor_payload() {
+        let packet = Packet::tensor(test_tensor());
+        let cloned_packet = packet.clone();
+
+        assert_eq!(
+            cloned_packet
+                .into_tensor()
+                .expect("shared tensor payload")
+                .buffer()
+                .read_bytes(),
+            vec![1, 2, 3, 4]
+        );
+    }
 }

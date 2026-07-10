@@ -184,20 +184,20 @@ impl InferBackend for OpenVINOBackend {
     fn init(&mut self, option: &RuntimeOption) -> Result<()> {
         trace!("initializing OpenVINO backend");
         let openvino_options = Self::openvino_options(option)?;
-        if let Some(precision) = option.precision
-            && !supports_precision(BackendKind::OpenVINO, precision)
-        {
-            return Err(Error::UnsupportedPrecision(precision));
+        if let Some(precision) = option.precision {
+            if !supports_precision(BackendKind::OpenVINO, precision) {
+                return Err(Error::UnsupportedPrecision(precision));
+            }
         }
-        if let Some(device) = option.device
-            && !supports_device(BackendKind::OpenVINO, device)
-        {
-            return Err(Error::UnsupportedDevice(device));
+        if let Some(device) = option.device {
+            if !supports_device(BackendKind::OpenVINO, device) {
+                return Err(Error::UnsupportedDevice(device));
+            }
         }
-        if let Some(deploy_mode) = option.deploy_mode
-            && !supports_deployment(BackendKind::OpenVINO, deploy_mode)
-        {
-            return Err(Error::UnsupportedDeployment(deploy_mode));
+        if let Some(deploy_mode) = option.deploy_mode {
+            if !supports_deployment(BackendKind::OpenVINO, deploy_mode) {
+                return Err(Error::UnsupportedDeployment(deploy_mode));
+            }
         }
         let mut core = Core::new().map_err(|err| Error::BackendUnavailable(err.to_string()))?;
         let device = DeviceType::from(openvino_options.device.as_str()).to_owned();
