@@ -24,6 +24,16 @@ cargo run -p dg-cli -- run --config examples/mock-multi-algorithm.yaml
 只用于验证编排与算法 element；真实部署使用通用 `inference` element，并为
 `dg-cli` 启用对应后端 feature。
 
+使用 `--watch` 可在执行一次初始图后持续监控配置文件：
+
+```bash
+cargo run -p dg-cli -- run --watch --config graph.yaml
+```
+
+每次有效变更会按 `--format text|json` 输出节点和连接 diff；无法加载、规范化或
+校验的变更会被拒绝并报告错误，上一份有效配置继续保持活动状态。进程可用
+Ctrl-C 终止监控。
+
 ## 3. GraphSpec
 
 配置支持 YAML、JSON 和 TOML。最小 YAML：
