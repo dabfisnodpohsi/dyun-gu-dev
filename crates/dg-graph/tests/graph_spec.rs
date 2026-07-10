@@ -338,6 +338,46 @@ fn graph_defaults_do_not_override_template_parameters() {
 }
 
 #[test]
+fn node_fields_override_template_parameters() {
+    let spec = GraphSpec {
+        templates: BTreeMap::from([(
+            "inference_defaults".to_string(),
+            NodeTemplate {
+                kind: "inference".to_string(),
+                template: None,
+                params: json!({"precision": "f16"}),
+            },
+        )]),
+        nodes: vec![
+            NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                params: json!({"count": 1, "shape": [1, 4]}),
+                ..NodeSpec::default()
+            },
+            NodeSpec {
+                name: "infer".to_string(),
+                kind: "inference".to_string(),
+                template: Some("inference_defaults".to_string()),
+                precision: Some("f32".to_string()),
+                params: json!({}),
+                ..NodeSpec::default()
+            },
+        ],
+        connections: vec!["source.out -> infer.in".to_string()],
+        defaults: DefaultsSpec {
+            backend: Some("mock".to_string()),
+            device: Some(DeviceDefault::Named("cpu".to_string())),
+            precision: Some("f16".to_string()),
+        },
+        ..GraphSpec::default()
+    }
+    .normalize_with_base_dir(None)
+    .expect("node-level fields should override template parameters");
+    assert_eq!(spec.nodes[1].params["precision"], "f32");
+}
+
+#[test]
 fn graph_defaults_from_includes_have_lower_precedence() {
     let root = unique_temp_dir("dg-graph-defaults");
     fs::create_dir_all(&root).expect("create temp dir");

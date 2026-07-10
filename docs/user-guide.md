@@ -67,8 +67,9 @@ defaults:
   precision: f32
 ```
 
-参数优先级为 **node 参数 > template 参数 > 全局 defaults**；defaults 只填充
-节点和模板都未提供的字段，不会覆盖已有值。include 文件中的 defaults 低于顶层
+参数优先级为 **params 显式字段 > 节点级 backend/device/precision >
+template 参数 > 全局 defaults**；defaults 只填充节点、节点级字段和模板都未提供
+的字段，不会覆盖已有值。include 文件中的 defaults 低于顶层
 配置，顶层文件提供的值优先。`${var}` 变量会在 defaults 注入后替换，因此默认值
 也可以引用变量。
 

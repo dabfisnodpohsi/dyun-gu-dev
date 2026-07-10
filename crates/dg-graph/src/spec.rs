@@ -276,8 +276,16 @@ impl GraphSpec {
 
         merged.merge_included(self.clone());
         merged.includes.clear();
+        let explicit_param_keys = merged
+            .nodes
+            .iter()
+            .map(|node| match &node.params {
+                Value::Object(params) => params.keys().cloned().collect(),
+                _ => BTreeSet::new(),
+            })
+            .collect::<Vec<BTreeSet<String>>>();
         merged.apply_templates();
-        merged.apply_node_overrides();
+        merged.apply_node_overrides(&explicit_param_keys);
         merged.apply_defaults();
         merged.apply_variables();
         merged.validate()?;
@@ -309,8 +317,8 @@ impl GraphSpec {
         }
     }
 
-    fn apply_node_overrides(&mut self) {
-        for node in &mut self.nodes {
+    fn apply_node_overrides(&mut self, explicit_param_keys: &[BTreeSet<String>]) {
+        for (node, explicit_keys) in self.nodes.iter_mut().zip(explicit_param_keys) {
             let Some(descriptor) = find_element(&node.kind) else {
                 continue;
             };
@@ -330,7 +338,7 @@ impl GraphSpec {
                 continue;
             };
             for (name, value) in values {
-                if allowed(name) && !params.contains_key(name) {
+                if allowed(name) && !explicit_keys.contains(name) {
                     if let Some(value) = value {
                         params.insert(name.to_string(), Value::String(value.clone()));
                     }
