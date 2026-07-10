@@ -193,6 +193,14 @@ impl Element for SinkElement {
                 guard.tensors.push(tensor.clone());
             } else if let Some(detections) = packet.detections_ref() {
                 guard.detections.push(detections.to_vec());
+            } else if let Some(results) = packet.classifications_ref() {
+                guard.classifications.push(results.to_vec());
+            } else if let Some(results) = packet.faces_ref() {
+                guard.faces.push(results.to_vec());
+            } else if let Some(results) = packet.tracks_ref() {
+                guard.tracks.push(results.to_vec());
+            } else if let Some(results) = packet.ocr_ref() {
+                guard.ocr.push(results.to_vec());
             } else {
                 return Err(Error::Runtime(
                     "expected tensor or detections payload".to_string(),

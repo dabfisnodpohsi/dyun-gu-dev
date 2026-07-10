@@ -36,3 +36,49 @@ impl Detection {
         }
     }
 }
+
+/// A point in image coordinates, used for facial landmarks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// A face detection with five ordered landmarks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FaceDetection {
+    pub bbox: BBox,
+    pub score: f32,
+    pub landmarks: Vec<Point>,
+}
+
+/// A classification candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Classification {
+    pub class_id: u32,
+    pub score: f32,
+    pub label: Option<String>,
+}
+
+/// A detection associated with a persistent tracker id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Track {
+    pub track_id: u64,
+    pub detection: Detection,
+    pub state: TrackState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackState {
+    New,
+    Tracked,
+    Lost,
+}
+
+/// OCR text and its optional image location.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OcrText {
+    pub text: String,
+    pub score: f32,
+    pub bbox: Option<BBox>,
+}

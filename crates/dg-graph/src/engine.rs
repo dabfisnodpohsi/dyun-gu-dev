@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dg_core::{Detection, Tensor};
+use dg_core::{Classification, Detection, FaceDetection, OcrText, Tensor, Track};
 use tracing::{error, info};
 
 use crate::element::{Element, ElementHandle, ElementIo};
@@ -46,6 +46,10 @@ impl GraphDiff {
 pub struct GraphReport {
     pub sinks: BTreeMap<String, Vec<Tensor>>,
     pub detections: BTreeMap<String, Vec<Detection>>,
+    pub classifications: BTreeMap<String, Vec<Classification>>,
+    pub faces: BTreeMap<String, Vec<FaceDetection>>,
+    pub tracks: BTreeMap<String, Vec<Track>>,
+    pub ocr: BTreeMap<String, Vec<OcrText>>,
 }
 
 type SinkMap = BTreeMap<String, Arc<Mutex<crate::element::SinkCollector>>>;
@@ -145,9 +149,41 @@ impl Graph {
                 .map_err(|_| Error::Runtime("sink lock poisoned".to_string()))?;
             report.sinks.insert(name.clone(), guard.tensors.clone());
             report.detections.insert(
-                name,
+                name.clone(),
                 guard
                     .detections
+                    .iter()
+                    .flat_map(|batch| batch.iter().cloned())
+                    .collect(),
+            );
+            report.classifications.insert(
+                name.clone(),
+                guard
+                    .classifications
+                    .iter()
+                    .flat_map(|batch| batch.iter().cloned())
+                    .collect(),
+            );
+            report.faces.insert(
+                name.clone(),
+                guard
+                    .faces
+                    .iter()
+                    .flat_map(|batch| batch.iter().cloned())
+                    .collect(),
+            );
+            report.tracks.insert(
+                name.clone(),
+                guard
+                    .tracks
+                    .iter()
+                    .flat_map(|batch| batch.iter().cloned())
+                    .collect(),
+            );
+            report.ocr.insert(
+                name,
+                guard
+                    .ocr
                     .iter()
                     .flat_map(|batch| batch.iter().cloned())
                     .collect(),

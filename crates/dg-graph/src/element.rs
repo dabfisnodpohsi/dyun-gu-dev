@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use dg_core::{DataType, Detection, Tensor};
+use dg_core::{Classification, DataType, Detection, FaceDetection, OcrText, Tensor, Track};
 
 use crate::error::{Error, Result};
 use crate::packet::Packet;
@@ -30,6 +30,10 @@ pub enum ElementHandle {
 pub struct SinkCollector {
     pub tensors: Vec<Tensor>,
     pub detections: Vec<Vec<Detection>>,
+    pub classifications: Vec<Vec<Classification>>,
+    pub faces: Vec<Vec<FaceDetection>>,
+    pub tracks: Vec<Vec<Track>>,
+    pub ocr: Vec<Vec<OcrText>>,
 }
 
 pub struct CreatedElement {
