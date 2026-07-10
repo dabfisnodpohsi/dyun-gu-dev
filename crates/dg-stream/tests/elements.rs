@@ -303,6 +303,73 @@ fn stream_elements_are_registered() {
 }
 
 #[test]
+fn stream_element_parameters_are_validated_at_load_time() {
+    let valid_track = h264_track(TrackReadiness::Ready, h264_extradata());
+    let mut unknown_track = serde_json::to_value(&valid_track).expect("serialize track");
+    unknown_track
+        .as_object_mut()
+        .expect("track object")
+        .insert("unknown".to_string(), serde_json::json!(true));
+    let invalid = [
+        (
+            "rtsp_src",
+            serde_json::json!({ "url": "rtsp://camera/stream", "unknown": true }),
+            "unknown field `unknown`",
+        ),
+        (
+            "rtsp_src",
+            serde_json::json!({ "url": "http://camera/stream.flv" }),
+            "scheme `http` is not supported by the rtsp protocol",
+        ),
+        (
+            "httpflv_src",
+            serde_json::json!({ "url": "http://camera/stream.flv", "queue_capacity": 0 }),
+            "field queue_capacity must be non-zero",
+        ),
+        (
+            "httpflv_src",
+            serde_json::json!({
+                "url": "https://camera/stream.flv",
+                "enable_video": false,
+                "enable_audio": false
+            }),
+            "at least one of enable_video or enable_audio must be true",
+        ),
+        (
+            "rtmp_sink",
+            serde_json::json!({ "url": "rtmp://server/live", "backpressure": "x" }),
+            "unknown field `backpressure`",
+        ),
+        (
+            "webrtc_sink",
+            serde_json::json!({ "url": "webrtc://server/session", "tracks": [unknown_track] }),
+            "unknown field `unknown`",
+        ),
+        (
+            "rtmp_sink",
+            serde_json::json!({
+                "url": "rtmp://server/live",
+                "tracks": [serde_json::to_value(h264_track(
+                    TrackReadiness::Ready,
+                    CodecExtradata::None,
+                )).expect("serialize track")]
+            }),
+            "missing required codec config",
+        ),
+    ];
+
+    for (kind, params, expected) in invalid {
+        let err = GraphSpecBuilder::new()
+            .add_node(node("stream", kind, params))
+            .build()
+            .expect_err("invalid stream params must fail during graph loading");
+        let message = err.to_string();
+        assert!(message.contains("nodes[stream].params"), "{message}");
+        assert!(message.contains(expected), "{message}");
+    }
+}
+
+#[test]
 fn pull_element_rejects_not_ready_tracks() {
     let hub = MemoryStreamHub::global();
     let publisher = hub
