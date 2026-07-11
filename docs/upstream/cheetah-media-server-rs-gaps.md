@@ -1,5 +1,10 @@
 # cheetah-media-server-rs：面向外部 Rust SDK 集成的能力缺口
 
+> 更新：上游已就本文缺口新增 `cheetah-connector` crate。基于上游最新 HEAD 的复核与
+> STREAM-01 仍缺失能力，见
+> [`cheetah-media-server-rs-connector-gaps.md`](cheetah-media-server-rs-connector-gaps.md)。
+> 本文保留原始（pinned rev `182621c`）分析。
+
 本文基于 pinned checkout：
 
 ```text
