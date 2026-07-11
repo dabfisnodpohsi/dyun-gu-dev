@@ -109,7 +109,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "avcodec-backend-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=3e61b5b39366dec91a6e4653787773dbcd8dfd6d#3e61b5b39366dec91a6e4653787773dbcd8dfd6d"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
 dependencies = [
  "avcodec-core-model",
  "jpeg-decoder",
@@ -119,7 +119,7 @@ dependencies = [
 [[package]]
 name = "avcodec-backend-zune"
 version = "0.1.0"
-source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=3e61b5b39366dec91a6e4653787773dbcd8dfd6d#3e61b5b39366dec91a6e4653787773dbcd8dfd6d"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
 dependencies = [
  "ab_glyph",
  "avcodec-core-model",
@@ -133,7 +133,7 @@ dependencies = [
 [[package]]
 name = "avcodec-core-model"
 version = "0.1.0"
-source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=3e61b5b39366dec91a6e4653787773dbcd8dfd6d#3e61b5b39366dec91a6e4653787773dbcd8dfd6d"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
 dependencies = [
  "smallvec",
  "spin",

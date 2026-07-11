@@ -78,9 +78,13 @@
 | ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
 
 > MEDIA-01 说明：已完成的验收覆盖的是 JPEG/MJPEG + 图像处理软件路径。真实**视频** decode/encode
-> 依赖上游 `avcodec-rs`。依赖已升到 `main` HEAD `3e61b5b`：新增了 native-free H.264 **软解码**，
-> 但仍无 native-free 视频**编码器**，完整 packet 契约也只完成一半。因此「真实视频 decode/encode 闭环」
-> 仍外部阻塞于上游，需求见 [docs/upstream/avcodec-rs-media01-requirements.md](upstream/avcodec-rs-media01-requirements.md)。
+> 依赖上游 `avcodec-rs`。依赖已升到 `main` HEAD `8ef5a72`：现已提供 native-free、纯 Rust 的 H.264
+> **decode + encode** 闭环（host I420 ↔ H.264 Annex-B，保留 KEY flag/PTS/DTS/packet time_base 与
+> in-band SPS/PPS），`EncoderConfig.parameters`/`Packet.time_base`/`Encoder::stream_parameters()` 也已落地。
+> 因此「真实 H.264 视频 decode/encode 闭环」**已不再外部阻塞**，可作为下一步在 `dg-media` 落地
+> （注册 `rust-h264` backend、`codec_from_name`/DecodeCore/EncodeCore 支持 `h264`）。剩余非阻塞项：
+> native-free VP8/VP9/AV1 覆盖与统一 `PacketMetadata` trait。复核详情见
+> [docs/upstream/avcodec-rs-media01-requirements.md](upstream/avcodec-rs-media01-requirements.md)。
 
 ## D. 可观测性、测试与交付
 

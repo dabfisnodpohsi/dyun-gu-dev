@@ -10,6 +10,20 @@
 > 收敛成面向上游的需求。文中「现有 API」仅指 `3e61b5b` checkout 中可核对的代码；「建议 API」
 > 均标注为 proposed，不表示当前已经存在。
 
+> **更新（复核基线推进到 `8ef5a72`）：** 依赖已从 `3e61b5b` 升到 upstream `main` HEAD
+> `8ef5a72a50b396bad1a670fc2757893c059191a4`（增量 `git log --oneline 3e61b5b..8ef5a72` 共 16 个提交，
+> 上游 `sdk-gaps-plan2` 系列）。核心变化：**新增纯 Rust、native-free 的 H.264 编码器**
+> （`avcodec-backend-rust-h264` 现 decode+encode，依赖 `rusty_h264`，`capability.toml` 报告
+> `encode = true` / `encode_codecs = ["H264"]`，并有 native-free 的 encode→decode round-trip 测试与
+> `native_free_h264_roundtrip` example），同时补齐 `EncoderConfig.parameters`/`extra_data`、
+> `Packet.time_base`、`Encoder::stream_parameters()`，以及 `NATIVE_FREE_DECODE_CODECS`/
+> `NATIVE_FREE_ENCODE_CODECS` 常量与 `native-free-software-media01` 校验 profile。
+>
+> 因此本文原「结论：仍不满足」已过时——**MEDIA-01 的核心「native-free H.264 软件 decode/encode
+> 闭环」现已具备**（详见下文各需求的「8ef5a72 状态」与 §5）。仅剩两项非阻塞项：native-free
+> VP8/VP9/AV1 覆盖（Req B，上游明确声明不在 native-free 范围）、以及统一 `PacketMetadata` trait
+> （Req C 的最后一小步）。
+
 ## 1. 背景/目标
 
 `dyun-gu-dev` 的 MEDIA-01（[design-remaining-tasks.md](../design-remaining-tasks.md)、[design.md §9.1](../design.md)）
@@ -96,7 +110,13 @@ encode_codecs = []
 4. 若短期只能提供 decode，请在 release contract 中明确「native-free 仅覆盖 H.264 decode」，
    以便 integrator 据此把 MEDIA-01 拆成 decode-only 中间里程碑。
 
-**优先级：P0。**（不满足则 MEDIA-01 的 encoder 验收无法在通用 CI 中完成。）
+**优先级：P0。**
+
+**8ef5a72 状态：已关闭。** `avcodec-backend-rust-h264` 现为 decode+encode（`src/encode.rs` 用
+`rusty_h264::Encoder`，接收 host I420、输出 `BitstreamFormat::H264AnnexB` 的 `Packet`，带 `PacketFlags::KEY`
+与 PTS/DTS/time_base），`capability.toml` 报告 `encode = true` / `encode_codecs = ["H264"]`，且
+`native-free-software` preset 与 `NATIVE_FREE_ENCODE_CODECS` 已包含 H264；`tests/native_free_h264_roundtrip.rs`
+与 SDK `native_free_h264_roundtrip` example 覆盖 native-free 的 encode→decode round-trip。
 
 ### Req B：native-free 视频 codec 覆盖面（对应 Gap 1 的横向扩展）
 
@@ -110,6 +130,12 @@ native/hardware profile 支持。integrator 需要一个稳定的「哪些 codec
 而不是从各 backend manifest 逐个推断。
 
 **优先级：P1。**（H.264 足以打通首期端到端；多 codec 覆盖影响 DEMO/后续验收广度。）
+
+**8ef5a72 状态：清单已明确，横向覆盖仍 OPEN（非阻塞）。** 上游用代码常量
+`NATIVE_FREE_DECODE_CODECS`/`NATIVE_FREE_ENCODE_CODECS`（= H264/JPEG/MJPEG）与
+`dev-docs/release/native_free_codec_matrix.md` 固化了 native-free 清单，并显式声明 VP8/VP9/AV1/H265
+不在 native-free 范围（libvpx/dav1d/svtav1 非 native-free）。即：清单契约达成，但未新增 native-free
+VP8/VP9/AV1 后端。首期 MEDIA-01 只需 H.264，故此项不阻塞。
 
 ### Req C：完成跨 backend 的 packet / extradata / timebase 契约（对应 Gap 4 未关闭部分）
 
@@ -151,6 +177,13 @@ PTS/DTS/timebase 在 `submit`/`poll`/`flush`/`reset` 后保留（与 Req A 的 e
 
 **优先级：P1。**（decode-only 路径已可用；encoder 侧 parameter-set 与协议对接依赖此项。）
 
+**8ef5a72 状态：基本关闭，仅剩可选项。** `EncoderConfig` 增加 `parameters`/`extra_data` 与
+`with_parameters`/`with_extra_data`；`Packet` 增加 packet 级 `time_base: Option<TimeBase>` 及 `time_base()`；
+`Encoder` trait 增加 `stream_parameters() -> Option<CodecParameters>`（默认 `None`，backend 走 in-band
+parameter set 时兼容）；round-trip 测试断言 PTS/DTS/time_base/KEY flag 的保留。**唯一未落地**的是统一的
+`PacketMetadata`-风格 accessor trait —— 现由 `Packet` 字段 + `Encoder::stream_parameters()` 分散提供，
+功能等价，仅是「是否收敛为单一 trait」的取舍，属可选增强，不阻塞 MEDIA-01。
+
 ## 4. 验收建议
 
 沿用 [`avcodec-rs-gaps.md` §4](avcodec-rs-gaps.md) 的思路，针对本文新增/未关闭项：
@@ -164,8 +197,14 @@ PTS/DTS/timebase 在 `submit`/`poll`/`flush`/`reset` 后保留（与 Req A 的 e
 
 ## 5. 对 `dyun-gu-dev` 的影响
 
-- 依赖已更新到 `main` HEAD `3e61b5b`；`dg-media` 的 registry/错误归一化/bridge 可开始采用已关闭
-  gap（native-free preset、`HostImageView`、`AvErrorContext`）。
-- MEDIA-01 的真实视频路径可先落地「H.264 native-free 软解码 → I420」中间里程碑（Req A 的 decode 半程已具备）。
-- 完整 MEDIA-01（decode/encode 闭环 + 协议可用的 packet 契约）仍**外部阻塞**于 Req A（P0）与 Req C（P1）；
-  在上游提供 native-free 视频 encoder 之前，encoder 验收不得用 JPEG 或 native backend 冒充。
+- 依赖已更新到 `main` HEAD `8ef5a72`；`dg-media` 的 registry/错误归一化/bridge 可采用已关闭能力
+  （native-free preset、`HostImageView`、`AvErrorContext`）。
+- **MEDIA-01 的真实视频路径不再外部阻塞：** 上游已提供 native-free、纯 Rust 的 H.264
+  **decode + encode** 闭环（host I420 ↔ H.264 Annex-B），并保留 KEY flag/PTS/DTS/packet time_base 与
+  in-band SPS/PPS。因此 MEDIA-01「用 `RegistryBuilder` 驱动 Decoder/Encoder/ImageProcessor + 真实码流」
+  现可在无硬件/无 native SDK 的 CI 中落地。
+- 建议的实现方向（后续独立 PR）：在 `dg-media-avcodec` 注册 `avcodec-backend-rust-h264`（走
+  `native-free-software` 白名单）、在 `dg-media` 的 `codec_from_name`/`DecodeCore`/`EncodeCore` 支持
+  `h264`（bitstream 用 `H264AnnexB`），并加一个 native-free 的 H.264 encode→decode 集成测试。
+- 剩余非阻塞项：native-free VP8/VP9/AV1 覆盖（Req B，上游明确不在 native-free 范围）与统一
+  `PacketMetadata` trait（Req C 的可选收敛）。

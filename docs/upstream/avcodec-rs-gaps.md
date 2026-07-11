@@ -8,10 +8,12 @@
 
 对应 revision 为 `621a708`。本文中的“现有 API”仅指该 checkout 中可核对的代码；“建议 API”均明确标为 proposed capability，不表示当前已经存在。
 
-> 更新（2026-07）：依赖已升到 upstream `main` HEAD `3e61b5b`。本文五个 gap 在新 revision 上的
+> 更新（2026-07）：依赖已升到 upstream `main` HEAD `8ef5a72`。本文五个 gap 在新 revision 上的
 > 复核结论与「完成 MEDIA-01 真实视频路径仍缺的能力」见
-> [`avcodec-rs-media01-requirements.md`](avcodec-rs-media01-requirements.md)：Gap 2/3/5 已关闭，
-> Gap 1/4 仅部分关闭（新增 native-free H.264 **解码**，仍缺 native-free 视频**编码**与完整 packet 契约）。
+> [`avcodec-rs-media01-requirements.md`](avcodec-rs-media01-requirements.md)：Gap 2/3/5 已关闭；
+> Gap 1（native-free H.264 **decode + encode**）与 Gap 4（`EncoderConfig.parameters`/`Packet.time_base`/
+> `Encoder::stream_parameters()`）也已基本关闭，仅剩 native-free VP8/VP9/AV1 覆盖与统一 `PacketMetadata`
+> trait 属非阻塞的可选增强。
 
 ## 1. 背景/目标
 
