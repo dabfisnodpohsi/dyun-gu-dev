@@ -246,6 +246,105 @@ fn graph_spec_validation_rejects_duplicate_names_and_cycles() {
 }
 
 #[test]
+fn cfg09_rejects_unknown_template_references() {
+    let error = GraphSpecBuilder::new()
+        .add_node(NodeSpec {
+            name: "infer".to_string(),
+            kind: "mock_inference".to_string(),
+            template: Some("missing".to_string()),
+            params: json!({"shape": [1, 4]}),
+            ..NodeSpec::default()
+        })
+        .build()
+        .expect_err("unknown templates should be rejected");
+    assert!(error.to_string().contains("nodes[infer].template"));
+    assert!(error.to_string().contains("missing"));
+}
+
+#[test]
+fn cfg09_rejects_unresolved_variables_in_params_and_connections() {
+    let param_error = GraphSpecBuilder::new()
+        .add_node(NodeSpec {
+            name: "source".to_string(),
+            kind: "source".to_string(),
+            params: json!({
+                "count": 1,
+                "shape": [1, 4],
+                "start": "${undefined}"
+            }),
+            ..NodeSpec::default()
+        })
+        .build()
+        .expect_err("unresolved parameter variables should be rejected");
+    assert!(param_error.to_string().contains("nodes[source].params"));
+    assert!(param_error.to_string().contains("${undefined}"));
+
+    let connection_error = GraphSpec {
+        nodes: vec![
+            NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                params: json!({"count": 1, "shape": [1, 4]}),
+                ..NodeSpec::default()
+            },
+            NodeSpec {
+                name: "sink".to_string(),
+                kind: "sink".to_string(),
+                params: json!({}),
+                ..NodeSpec::default()
+            },
+        ],
+        connections: vec!["source.out -> ${undefined}.in".to_string()],
+        ..GraphSpec::default()
+    }
+    .normalize_with_base_dir(None)
+    .expect_err("unresolved connection variables should be rejected");
+    assert!(connection_error.to_string().contains("connections[0]"));
+    assert!(connection_error.to_string().contains("${undefined}"));
+}
+
+#[test]
+fn cfg09_rejects_includes_without_a_base_directory() {
+    let error = GraphSpec {
+        includes: vec!["common.yaml".to_string()],
+        ..GraphSpec::default()
+    }
+    .normalize_with_base_dir(None)
+    .expect_err("includes need a base directory");
+    assert!(error.to_string().contains("includes"));
+    assert!(error.to_string().contains("base directory"));
+}
+
+#[test]
+fn cfg09_rejects_include_cycles() {
+    let root = unique_temp_dir("dg-graph-include-cycle");
+    fs::create_dir_all(&root).expect("create temp dir");
+    fs::write(
+        root.join("a.yaml"),
+        r#"
+apiVersion: dg/v1
+kind: Graph
+includes: ["b.yaml"]
+"#,
+    )
+    .expect("write first cyclic include");
+    fs::write(
+        root.join("b.yaml"),
+        r#"
+apiVersion: dg/v1
+kind: Graph
+includes: ["a.yaml"]
+"#,
+    )
+    .expect("write second cyclic include");
+
+    let error = GraphSpec::load_from_path(root.join("a.yaml"))
+        .expect_err("include cycles should be rejected");
+    assert!(error.to_string().contains("include cycle detected"));
+    fs::remove_dir_all(root).expect("remove temp dir");
+}
+
+#[test]
 fn cfg08_validates_threads_and_sink_semantics() {
     let threads_zero = GraphSpecBuilder::new()
         .add_node(NodeSpec {

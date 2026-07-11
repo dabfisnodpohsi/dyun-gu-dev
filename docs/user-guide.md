@@ -96,6 +96,12 @@ template 参数 > 全局 defaults**；defaults 只填充节点、节点级字段
 序列化，但调度器级设备含义暂由后续 SCH-* 任务接入；当前只有字符串形式会
 注入 `inference` 参数。
 
+配置引用会在加载期严格校验：节点引用不存在的 template、替换后仍未解析的
+`${var}`（包括未闭合的 `${`）、没有文件基目录却声明 `includes`，以及
+include 循环，都会产生定位到字段的验证错误。include 必须从文件路径加载，
+且循环引用会被拒绝；合法的 include、template 和 variable 引用仍按原有
+合并与替换规则处理。
+
 执行策略在顶层 `execution` 配置：
 
 ```yaml
