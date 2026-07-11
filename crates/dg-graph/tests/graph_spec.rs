@@ -429,12 +429,12 @@ fn cfg08_validates_threads_and_sink_semantics() {
         })
         .connect("source.out -> infer.in")
         .connect("infer.out -> terminal.in")
-         .build()
-         .expect("Pipeline multi-instancing with a terminal sink should validate");
- }
+        .build()
+        .expect("Pipeline multi-instancing with a terminal sink should validate");
+}
 
- #[test]
- fn graph_defaults_fill_inference_parameters() {
+#[test]
+fn graph_defaults_fill_inference_parameters() {
     let spec = inference_graph()
         .defaults(DefaultsSpec {
             backend: Some("mock".to_string()),
