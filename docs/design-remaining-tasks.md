@@ -70,7 +70,7 @@
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
 | APP-01 | 已完成 | CLI/C API 链接 media/stream registry | feature-gated 链接 `dg-media`/`dg-stream`；`list-elements` 和配置加载能发现八个 element；默认 build 仍无外部 SDK | CFG-02、CFG-03 |
-| MEDIA-01 | 未开始 | avcodec-rs 真实 adapter | `avcodec` feature 通过 RegistryBuilder 驱动 Decoder/Encoder/ImageProcessor；x86 software codec 测试覆盖真实码流；AvError 映射完整 | APP-01 |
+| MEDIA-01 | 已完成 | avcodec-rs 真实 adapter | `avcodec` feature 通过 RegistryBuilder 驱动 Decoder/Encoder/ImageProcessor；x86 software codec 测试覆盖真实码流；AvError 映射完整 | APP-01 |
 | STREAM-01 | 未开始 | cheetah 真实 connector | 提供可安装的 embedded `CheetahRuntimeConnector`，实现 RTSP/HTTP-FLV pull 和 RTMP/WebRTC push；本地 loopback 集成测试通过 | APP-01 |
 | STREAM-02 | 未开始 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
 | MEDIA-02 | 未开始 | frame bridge 与 planner 接入真实数据路径 | avcodec Image/Packet、cheetah AVFrame、dg-core Buffer/Tensor 共享兼容句柄；staging fallback 显式记录域、路径、copy count | MEDIA-01、STREAM-02、MEM-01 |

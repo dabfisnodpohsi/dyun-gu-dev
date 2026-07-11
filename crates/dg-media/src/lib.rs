@@ -5,6 +5,8 @@
 //! `dg-media` owns the framework's media-side buffer envelope and the decision
 //! logic for choosing zero-copy versus staging transfer paths.
 
+#[cfg(feature = "avcodec")]
+mod avcodec;
 mod bridge;
 mod elements;
 mod frame;

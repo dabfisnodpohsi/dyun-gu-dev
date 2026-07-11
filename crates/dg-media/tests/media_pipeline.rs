@@ -9,6 +9,7 @@ use serde_json::json;
 
 use dg_media as _;
 
+#[cfg(not(feature = "avcodec"))]
 fn recorded_frame_tensor(bytes: Vec<u8>) -> Tensor {
     let device = CpuDevice::new();
     let desc = TensorDesc::new(
@@ -35,6 +36,7 @@ fn node(name: &str, kind: &str, params: serde_json::Value) -> NodeSpec {
     }
 }
 
+#[cfg(not(feature = "avcodec"))]
 #[test]
 fn decode_resize_osd_encode_pipeline_runs_end_to_end() {
     let spec = GraphSpecBuilder::new()
@@ -93,6 +95,7 @@ fn decode_resize_osd_encode_pipeline_runs_end_to_end() {
     }
 }
 
+#[cfg(not(feature = "avcodec"))]
 #[test]
 fn decode_pipeline_rejects_wrong_payload_size() {
     let spec = GraphSpecBuilder::new()
@@ -151,6 +154,7 @@ fn media_element_parameters_are_validated_at_load_time() {
             json!({ "width": 2, "height": 2, "channels": 0 }),
             "field channels must be non-zero",
         ),
+        #[cfg(not(feature = "avcodec"))]
         (
             "media_encode",
             json!({ "codec": "h264" }),
@@ -211,4 +215,72 @@ fn media_encode_allows_omitted_parameters() {
         .connect("input.out -> encode.in")
         .build()
         .expect("parameterless media encoder should allow null params");
+}
+
+#[cfg(feature = "avcodec")]
+#[test]
+fn avcodec_media_encode_creates_with_omitted_parameters() {
+    let input = node("input", "input", serde_json::Value::Null);
+    let mut encode = node("encode", "media_encode", json!({}));
+    encode.params = serde_json::Value::Null;
+    let spec = GraphSpecBuilder::new()
+        .add_node(input)
+        .add_node(encode)
+        .connect("input.out -> encode.in")
+        .build()
+        .expect("parameterless media encoder should validate");
+
+    Graph::new(spec).expect("parameterless avcodec media encoder should create");
+}
+
+#[cfg(all(feature = "avcodec", target_arch = "x86_64"))]
+#[test]
+fn avcodec_jpeg_round_trip_through_media_elements() {
+    let spec = GraphSpecBuilder::new()
+        .add_node(node("input", "input", json!({})))
+        .add_node(node("encode", "media_encode", json!({ "codec": "jpeg" })))
+        .add_node(node(
+            "decode",
+            "media_decode",
+            json!({
+                "width": 2,
+                "height": 2,
+                "channels": 3,
+                "codec": "jpeg"
+            }),
+        ))
+        .add_node(node("sink", "sink", json!({})))
+        .connect("input.out -> encode.in")
+        .connect("encode.out -> decode.in")
+        .connect("decode.out -> sink.in")
+        .build()
+        .expect("build avcodec JPEG graph");
+
+    let tensor = {
+        let device = CpuDevice::new();
+        let desc = TensorDesc::new(
+            Shape::new([2, 2, 3]),
+            DataType::U8,
+            DataFormat::NHWC,
+            DeviceKind::Cpu,
+        );
+        let tensor = Tensor::allocate(&device, desc).expect("allocate RGB frame");
+        tensor
+            .buffer()
+            .write_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
+            .expect("write RGB frame");
+        tensor
+    };
+
+    let report = Graph::new(spec)
+        .expect("build graph")
+        .run_with_inputs(HashMap::from([("input".to_string(), vec![tensor])]))
+        .expect("run avcodec JPEG graph");
+    let output = report
+        .sinks
+        .get("sink")
+        .and_then(|frames| frames.first())
+        .expect("decoded frame");
+    assert_eq!(output.desc().shape().dims(), &[2, 2, 3]);
+    assert_eq!(output.desc().dtype(), DataType::U8);
 }

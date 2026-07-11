@@ -8,7 +8,13 @@ rust-version.workspace = true
 
 [features]
 default = []
-avcodec = ["dep:avcodec-core"]
+avcodec = [
+    "dep:avcodec-core",
+    "dep:avcodec-backend-jpeg",
+    "dep:avcodec-backend-zune",
+]
 
 [dependencies]
 avcodec-core = { git = "https://github.com/TimothyWalker6922/avcodec-rs-develop.git", rev = "621a708b725f9b9c7e6da7e43382e2066f741aaf", package = "avcodec-core-model", default-features = false, features = ["std"], optional = true }
+avcodec-backend-jpeg = { git = "https://github.com/TimothyWalker6922/avcodec-rs-develop.git", rev = "621a708b725f9b9c7e6da7e43382e2066f741aaf", package = "avcodec-backend-jpeg", default-features = false, optional = true }
+avcodec-backend-zune = { git = "https://github.com/TimothyWalker6922/avcodec-rs-develop.git", rev = "621a708b725f9b9c7e6da7e43382e2066f741aaf", package = "avcodec-backend-zune", default-features = false, optional = true }

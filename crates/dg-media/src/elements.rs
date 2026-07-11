@@ -10,6 +10,11 @@ use dg_graph::{
 use serde_json::{Map, Value};
 use tracing::trace;
 
+#[cfg(feature = "avcodec")]
+use crate::avcodec::{
+    DecodeCore as AvcodecDecodeCore, EncodeCore as AvcodecEncodeCore,
+    ResizeCore as AvcodecResizeCore,
+};
 use crate::bridge::{graph_packet_to_media_frame, media_frame_to_graph_packet};
 use crate::ops::{DecodeCore, EncodeCore, MediaPoll, OsdBox, OsdCore, ResizeCore};
 use crate::MediaFrame;
@@ -24,10 +29,16 @@ const MEDIA_OUTPUT: [PortSchema; 1] = [PortSchema {
     dtype: None,
     required: false,
 }];
+#[cfg(feature = "avcodec")]
+const DECODE_PARAM_FIELDS: &[&str] = &["width", "height", "channels", "codec"];
+#[cfg(not(feature = "avcodec"))]
 const DECODE_PARAM_FIELDS: &[&str] = &["width", "height", "channels"];
+#[cfg(feature = "avcodec")]
+const ENCODE_PARAM_FIELDS: &[&str] = &["codec"];
 const RESIZE_PARAM_FIELDS: &[&str] = &["width", "height"];
 const OSD_PARAM_FIELDS: &[&str] = &["boxes", "color", "thickness"];
 const OSD_BOX_FIELDS: &[&str] = &["x", "y", "width", "height"];
+#[cfg(not(feature = "avcodec"))]
 const EMPTY_PARAMS: &[ParamField] = &[];
 const DECODE_PARAMS: &[ParamField] = &[
     ParamField {
@@ -45,7 +56,21 @@ const DECODE_PARAMS: &[ParamField] = &[
         ty: ParamType::Uint,
         required: false,
     },
+    #[cfg(feature = "avcodec")]
+    ParamField {
+        name: "codec",
+        ty: ParamType::Enum(&["jpeg", "mjpeg"]),
+        required: false,
+    },
 ];
+#[cfg(feature = "avcodec")]
+const ENCODE_PARAMS: &[ParamField] = &[ParamField {
+    name: "codec",
+    ty: ParamType::Enum(&["jpeg", "mjpeg"]),
+    required: false,
+}];
+#[cfg(not(feature = "avcodec"))]
+const ENCODE_PARAMS: &[ParamField] = EMPTY_PARAMS;
 const RESIZE_PARAMS: &[ParamField] = &[
     ParamField {
         name: "width",
@@ -91,8 +116,8 @@ inventory::submit! {
         kind: "media_encode",
         input_ports: &MEDIA_INPUT,
         output_ports: &MEDIA_OUTPUT,
-        params: EMPTY_PARAMS,
-        validate: Some(validate_empty_params),
+        params: ENCODE_PARAMS,
+        validate: Some(validate_encode),
         create: create_encode,
     }
 }
@@ -120,7 +145,7 @@ inventory::submit! {
 trait MediaCore: Send {
     fn submit(&mut self, frame: MediaFrame) -> dg_core::Result<()>;
     fn submit_end_of_stream(&mut self);
-    fn poll(&mut self) -> MediaPoll;
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error>;
 }
 
 impl MediaCore for DecodeCore {
@@ -130,8 +155,8 @@ impl MediaCore for DecodeCore {
     fn submit_end_of_stream(&mut self) {
         Self::submit_end_of_stream(self);
     }
-    fn poll(&mut self) -> MediaPoll {
-        Self::poll(self)
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Ok(Self::poll(self))
     }
 }
 
@@ -142,8 +167,8 @@ impl MediaCore for EncodeCore {
     fn submit_end_of_stream(&mut self) {
         Self::submit_end_of_stream(self);
     }
-    fn poll(&mut self) -> MediaPoll {
-        Self::poll(self)
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Ok(Self::poll(self))
     }
 }
 
@@ -154,8 +179,8 @@ impl MediaCore for ResizeCore {
     fn submit_end_of_stream(&mut self) {
         Self::submit_end_of_stream(self);
     }
-    fn poll(&mut self) -> MediaPoll {
-        Self::poll(self)
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Ok(Self::poll(self))
     }
 }
 
@@ -166,7 +191,52 @@ impl MediaCore for OsdCore {
     fn submit_end_of_stream(&mut self) {
         Self::submit_end_of_stream(self);
     }
-    fn poll(&mut self) -> MediaPoll {
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Ok(Self::poll(self))
+    }
+}
+
+#[cfg(feature = "avcodec")]
+impl MediaCore for AvcodecDecodeCore {
+    fn submit(&mut self, frame: MediaFrame) -> dg_core::Result<()> {
+        self.submit_packet(frame)
+    }
+
+    fn submit_end_of_stream(&mut self) {
+        Self::submit_end_of_stream(self);
+    }
+
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Self::poll(self)
+    }
+}
+
+#[cfg(feature = "avcodec")]
+impl MediaCore for AvcodecEncodeCore {
+    fn submit(&mut self, frame: MediaFrame) -> dg_core::Result<()> {
+        self.submit_image(frame)
+    }
+
+    fn submit_end_of_stream(&mut self) {
+        Self::submit_end_of_stream(self);
+    }
+
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
+        Self::poll(self)
+    }
+}
+
+#[cfg(feature = "avcodec")]
+impl MediaCore for AvcodecResizeCore {
+    fn submit(&mut self, frame: MediaFrame) -> dg_core::Result<()> {
+        self.submit_image(frame)
+    }
+
+    fn submit_end_of_stream(&mut self) {
+        Self::submit_end_of_stream(self);
+    }
+
+    fn poll(&mut self) -> core::result::Result<MediaPoll, dg_core::Error> {
         Self::poll(self)
     }
 }
@@ -178,7 +248,10 @@ struct MediaElement<C: MediaCore> {
 impl<C: MediaCore> MediaElement<C> {
     fn drain(&mut self, io: &ElementIo) -> Result<bool> {
         loop {
-            match self.core.poll() {
+            match self.core.poll().map_err(|err| Error::Element {
+                element: io.name.clone(),
+                message: err.to_string(),
+            })? {
                 MediaPoll::Ready(frame) => {
                     let meta = dg_graph::PacketMeta {
                         sequence: frame
@@ -235,30 +308,47 @@ impl<C: MediaCore> Element for MediaElement<C> {
 
 fn create_decode(node: &NodeSpec) -> Result<CreatedElement> {
     let (width, height, channels) = parse_decode(node)?;
+    #[cfg(feature = "avcodec")]
+    let codec = parse_codec(node)?;
+    #[cfg(feature = "avcodec")]
+    let core = {
+        let _ = (width, height, channels);
+        AvcodecDecodeCore::new(codec)?
+    };
+    #[cfg(not(feature = "avcodec"))]
+    let core = DecodeCore::new(width, height, channels);
     Ok(CreatedElement {
-        element: Box::new(MediaElement {
-            core: DecodeCore::new(width, height, channels),
-        }),
+        element: Box::new(MediaElement { core }),
         handle: ElementHandle::None,
     })
 }
 
 fn create_encode(node: &NodeSpec) -> Result<CreatedElement> {
-    validate_empty_params(node)?;
+    validate_encode(node)?;
+    #[cfg(feature = "avcodec")]
+    let codec = if node.params.is_null() {
+        crate::avcodec::codec_from_name(None).map_err(|err| Error::Config(err.to_string()))?
+    } else {
+        parse_codec(node)?
+    };
+    #[cfg(feature = "avcodec")]
+    let core = AvcodecEncodeCore::new(codec)?;
+    #[cfg(not(feature = "avcodec"))]
+    let core = EncodeCore::new();
     Ok(CreatedElement {
-        element: Box::new(MediaElement {
-            core: EncodeCore::new(),
-        }),
+        element: Box::new(MediaElement { core }),
         handle: ElementHandle::None,
     })
 }
 
 fn create_resize(node: &NodeSpec) -> Result<CreatedElement> {
     let (width, height) = parse_resize(node)?;
+    #[cfg(feature = "avcodec")]
+    let core = AvcodecResizeCore::new(width, height)?;
+    #[cfg(not(feature = "avcodec"))]
+    let core = ResizeCore::new(width, height);
     Ok(CreatedElement {
-        element: Box::new(MediaElement {
-            core: ResizeCore::new(width, height),
-        }),
+        element: Box::new(MediaElement { core }),
         handle: ElementHandle::None,
     })
 }
@@ -274,7 +364,25 @@ fn create_osd(node: &NodeSpec) -> Result<CreatedElement> {
 }
 
 fn validate_decode(node: &NodeSpec) -> Result<()> {
-    parse_decode(node).map(|_| ())
+    parse_decode(node)?;
+    #[cfg(feature = "avcodec")]
+    parse_codec(node)?;
+    Ok(())
+}
+
+fn validate_encode(node: &NodeSpec) -> Result<()> {
+    if node.params.is_null() {
+        return Ok(());
+    }
+    let params = params_object(node)?;
+    #[cfg(feature = "avcodec")]
+    {
+        reject_unknown_fields(params, ENCODE_PARAM_FIELDS)?;
+        parse_codec(node)?;
+    }
+    #[cfg(not(feature = "avcodec"))]
+    reject_unknown_fields(params, &[])?;
+    Ok(())
 }
 
 fn parse_decode(node: &NodeSpec) -> Result<(usize, usize, usize)> {
@@ -289,6 +397,13 @@ fn parse_decode(node: &NodeSpec) -> Result<(usize, usize, usize)> {
         .and_then(|pixels| pixels.checked_mul(channels))
         .ok_or_else(|| Error::Config("image dimensions overflow".to_string()))?;
     Ok((width, height, channels))
+}
+
+#[cfg(feature = "avcodec")]
+fn parse_codec(node: &NodeSpec) -> Result<dg_media_avcodec::CodecId> {
+    let params = params_object(node)?;
+    let name = params.get("codec").and_then(Value::as_str);
+    crate::avcodec::codec_from_name(name).map_err(|err| Error::Config(err.to_string()))
 }
 
 fn validate_resize(node: &NodeSpec) -> Result<()> {
@@ -321,14 +436,6 @@ fn parse_osd(node: &NodeSpec) -> Result<(Vec<OsdBox>, Vec<u8>, usize)> {
     let thickness = read_usize(params, "thickness")?.unwrap_or(1);
     ensure_nonzero(thickness, "thickness")?;
     Ok((boxes, color, thickness))
-}
-
-fn validate_empty_params(node: &NodeSpec) -> Result<()> {
-    if node.params.is_null() {
-        return Ok(());
-    }
-    let params = params_object(node)?;
-    reject_unknown_fields(params, &[])
 }
 
 fn params_object(node: &NodeSpec) -> Result<&Map<String, Value>> {

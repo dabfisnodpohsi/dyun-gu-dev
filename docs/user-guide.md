@@ -177,6 +177,13 @@ cargo run -p dg-cli --features sophon -- run --config graph.yaml
 默认构建可用录制的内存帧验证完整图；`avcodec` feature 提供外部媒体 handle
 导入、同内存域共享和跨域 staging fallback。
 
+启用 `dg-media` 的 `avcodec` feature 后，`media_decode` 与 `media_encode` 通过
+avcodec-rs `RegistryBuilder` 使用纯 Rust JPEG/MJPEG 软件 codec，`media_resize`
+通过纯 Rust zune `ImageProcessor` 执行；`media_osd` 始终使用本地实现。解码器和
+编码器的可选 `codec` 参数为 `jpeg` 或 `mjpeg`，默认是 `jpeg`。该 feature 不启用
+FFmpeg、厂商 SDK、系统 codec library 或 native build tool，默认 feature 仍关闭
+avcodec，继续使用原有 synthetic Sans-I/O cores。
+
 `dg-stream` 注册 `rtsp_src`、`httpflv_src`、`rtmp_sink`、`webrtc_sink`。
 `mock://` URL 使用进程内 `MemoryStreamHub`，适合确定性测试；真实协议 URL 通过
 `cheetah` feature 的 connector 接入，未启用时会明确报错。发布前应确认视频/音频

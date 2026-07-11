@@ -206,14 +206,18 @@ pub fn avcodec_packet_to_media_frame(packet: &dg_media_avcodec::Packet) -> Resul
         |_| Vec::new(),
         |bytes| bytes.map_or_else(Vec::new, |slice| slice.to_vec()),
     );
-    MediaFrame::from_host_bytes(
+    let shape = vec![bytes.len()];
+    let mut frame = MediaFrame::from_host_bytes(
         MediaFrameKind::Tensor,
         DataType::U8,
-        DataFormat::Auto,
-        Vec::new(),
+        DataFormat::N,
+        shape,
         DeviceKind::Cpu,
         bytes,
-    )
+    )?;
+    frame.meta.pts = packet.pts;
+    frame.meta.dts = packet.dts;
+    Ok(frame)
 }
 
 #[cfg(feature = "avcodec")]
@@ -223,13 +227,18 @@ pub fn media_frame_to_avcodec_packet(
     codec: dg_media_avcodec::CodecId,
     bitstream_format: dg_media_avcodec::BitstreamFormat,
 ) -> Result<dg_media_avcodec::Packet> {
+    let pts = frame.meta.pts;
+    let dts = frame.meta.dts;
     let bytes = frame.buffer.into_host_bytes();
-    Ok(dg_media_avcodec::Packet::from_host_bytes(
+    let mut packet = dg_media_avcodec::Packet::from_host_bytes(
         u64::from(stream_index),
         codec,
         bitstream_format,
         bytes,
-    ))
+    );
+    packet.pts = pts;
+    packet.dts = dts;
+    Ok(packet)
 }
 
 #[cfg(feature = "avcodec")]
@@ -248,14 +257,34 @@ pub fn avcodec_image_to_media_frame(image: &dg_media_avcodec::Image) -> Result<M
             .host_bytes()
             .map_or_else(Vec::new, |slice| slice.to_vec())
     };
-    MediaFrame::from_host_bytes(
+    let channels = match image.format {
+        dg_media_avcodec::ImageInfo::Gray8 => 1,
+        dg_media_avcodec::ImageInfo::Rgb24 | dg_media_avcodec::ImageInfo::Bgr24 => 3,
+        dg_media_avcodec::ImageInfo::Rgba | dg_media_avcodec::ImageInfo::Bgra => 4,
+        _ => {
+            return Err(dg_core::Error::Media(format!(
+                "unsupported avcodec image format {:?}",
+                image.format
+            )))
+        }
+    };
+    let mut frame = MediaFrame::from_host_bytes(
         MediaFrameKind::Image,
         DataType::U8,
-        DataFormat::Auto,
-        vec![image.coded_height as usize, image.coded_width as usize],
+        DataFormat::NHWC,
+        vec![
+            usize::try_from(image.coded_height)
+                .map_err(|_| dg_core::Error::Media("image height overflow".to_string()))?,
+            usize::try_from(image.coded_width)
+                .map_err(|_| dg_core::Error::Media("image width overflow".to_string()))?,
+            channels,
+        ],
         DeviceKind::Cpu,
         host,
-    )
+    )?;
+    frame.meta.pts = image.pts;
+    frame.meta.dts = image.dts;
+    Ok(frame)
 }
 
 #[cfg(feature = "avcodec")]
@@ -263,26 +292,40 @@ pub fn media_frame_to_avcodec_image(
     frame: MediaFrame,
     stride_alignment: usize,
 ) -> Result<dg_media_avcodec::Image> {
+    let pts = frame.meta.pts;
+    let dts = frame.meta.dts;
     let height = frame.shape.first().copied().unwrap_or_default();
     let width = frame.shape.get(1).copied().unwrap_or_default();
     let coded_width = u32::try_from(width).unwrap_or(u32::MAX);
     let coded_height = u32::try_from(height).unwrap_or(u32::MAX);
-    let format = match frame.shape.last().copied().unwrap_or_default() {
+    let channels = frame.shape.last().copied().unwrap_or_default();
+    let format = match channels {
         3 => dg_media_avcodec::ImageInfo::Rgb24,
         4 => dg_media_avcodec::ImageInfo::Rgba,
         _ => dg_media_avcodec::ImageInfo::Gray8,
     };
+    let bytes_per_pixel = match format {
+        dg_media_avcodec::ImageInfo::Rgb24 => 3,
+        dg_media_avcodec::ImageInfo::Rgba => 4,
+        _ => 1,
+    };
+    let stride = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| dg_core::Error::Media("image stride overflow".to_string()))?;
     let bytes = frame.buffer.into_host_bytes();
-    dg_media_avcodec::Image::new_host_packed(
+    let mut image = dg_media_avcodec::Image::new_host_packed(
         format,
         coded_width,
         coded_height,
         0,
-        width,
+        stride,
         bytes,
         stride_alignment,
     )
-    .map_err(|err| dg_core::Error::Buffer(format!("{err:?}")))
+    .map_err(|err| dg_core::Error::Buffer(format!("{err:?}")))?;
+    image.pts = pts;
+    image.dts = dts;
+    Ok(image)
 }
 
 #[cfg(feature = "avcodec")]
