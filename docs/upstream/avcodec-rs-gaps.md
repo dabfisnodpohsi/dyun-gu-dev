@@ -8,6 +8,11 @@
 
 对应 revision 为 `621a708`。本文中的“现有 API”仅指该 checkout 中可核对的代码；“建议 API”均明确标为 proposed capability，不表示当前已经存在。
 
+> 更新（2026-07）：依赖已升到 upstream `main` HEAD `3e61b5b`。本文五个 gap 在新 revision 上的
+> 复核结论与「完成 MEDIA-01 真实视频路径仍缺的能力」见
+> [`avcodec-rs-media01-requirements.md`](avcodec-rs-media01-requirements.md)：Gap 2/3/5 已关闭，
+> Gap 1/4 仅部分关闭（新增 native-free H.264 **解码**，仍缺 native-free 视频**编码**与完整 packet 契约）。
+
 ## 1. 背景/目标
 
 `dyun-gu-dev` 作为外部 Rust integrator，需要在稳定、可 feature-gated 的 SDK 边界上驱动真实媒体路径，并在 CI 中验证这些路径。目标环境不应要求外部服务器、硬件、native SDK、系统库、native build tools 或构建期间下载并编译额外 native artifact。

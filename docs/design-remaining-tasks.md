@@ -77,6 +77,11 @@
 | ELEM-01 | 未开始 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
 | ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
 
+> MEDIA-01 说明：已完成的验收覆盖的是 JPEG/MJPEG + 图像处理软件路径。真实**视频** decode/encode
+> 依赖上游 `avcodec-rs`。依赖已升到 `main` HEAD `3e61b5b`：新增了 native-free H.264 **软解码**，
+> 但仍无 native-free 视频**编码器**，完整 packet 契约也只完成一半。因此「真实视频 decode/encode 闭环」
+> 仍外部阻塞于上游，需求见 [docs/upstream/avcodec-rs-media01-requirements.md](upstream/avcodec-rs-media01-requirements.md)。
+
 ## D. 可观测性、测试与交付
 
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |

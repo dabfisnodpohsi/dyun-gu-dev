@@ -7,9 +7,9 @@ use crate::bridge::{
 use crate::MediaFrame;
 
 use dg_media_avcodec::{
-    AvError, AvErrorKind, BitstreamFormat, CodecId, Decoder, DecoderConfig, Encoder, EncoderConfig,
-    ImageOp, ImageProcessRequest, ImageProcessor, ImageProcessorConfig, MemoryDomain, Poll,
-    Registry, RegistryBuilder, TimeBase, JPEG_BACKEND, ZUNE_BACKEND,
+    AvError, AvErrorContext, AvErrorKind, BitstreamFormat, CodecId, Decoder, DecoderConfig,
+    Encoder, EncoderConfig, ImageOp, ImageProcessRequest, ImageProcessor, ImageProcessorConfig,
+    MemoryDomain, Poll, Registry, RegistryBuilder, TimeBase, JPEG_BACKEND, ZUNE_BACKEND,
 };
 
 pub fn registry() -> Registry {
@@ -50,29 +50,58 @@ pub fn map_av_error(error: AvError) -> Error {
             Error::Media(format!("avcodec {kind:?}: {detail:?}"))
         }
         AvError::ExternalError(code) => Error::Media(format!("avcodec external error code {code}")),
+        AvError::WithContext { error, context } => {
+            append_av_error_context(map_av_error(*error), context)
+        }
+    }
+}
+
+fn append_av_error_context(error: Error, context: AvErrorContext) -> Error {
+    let mut fields = Vec::new();
+    if let Some(backend_id) = context.backend_id {
+        fields.push(format!("backend={backend_id}"));
+    }
+    if let Some(codec) = context.codec {
+        fields.push(format!("codec={codec:?}"));
+    }
+    if let Some(operation) = context.operation {
+        fields.push(format!("operation={operation:?}"));
+    }
+    if let Some(frame_index) = context.frame_index {
+        fields.push(format!("frame_index={frame_index}"));
+    }
+    if let Some(packet_index) = context.packet_index {
+        fields.push(format!("packet_index={packet_index}"));
+    }
+    if let Some(source_format) = context.source_format {
+        fields.push(format!("source_format={source_format:?}"));
+    }
+    if let Some(destination_format) = context.destination_format {
+        fields.push(format!("destination_format={destination_format:?}"));
+    }
+    if let Some(width) = context.width {
+        fields.push(format!("width={width}"));
+    }
+    if let Some(height) = context.height {
+        fields.push(format!("height={height}"));
+    }
+
+    if fields.is_empty() {
+        return error;
+    }
+
+    match error {
+        Error::Media(message) => Error::Media(format!("{message}; context: {}", fields.join(", "))),
+        other => other,
     }
 }
 
 fn is_again(error: &AvError) -> bool {
-    matches!(
-        error,
-        AvError::Again
-            | AvError::Classified {
-                kind: AvErrorKind::Again,
-                ..
-            }
-    )
+    error.kind() == AvErrorKind::Again
 }
 
 fn is_end_of_stream(error: &AvError) -> bool {
-    matches!(
-        error,
-        AvError::EndOfStream
-            | AvError::Classified {
-                kind: AvErrorKind::EndOfStream,
-                ..
-            }
-    )
+    error.kind() == AvErrorKind::EndOfStream
 }
 
 pub struct DecodeCore {
