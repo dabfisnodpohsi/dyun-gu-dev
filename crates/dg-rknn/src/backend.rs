@@ -381,7 +381,10 @@ impl RknnBackend {
             if mem.external {
                 continue;
             }
-            let bytes = tensor.buffer().read_bytes();
+            let bytes = tensor
+                .buffer()
+                .try_read_bytes()
+                .map_err(|error| Error::Backend(error.to_string()))?;
             match &info.strides {
                 Some(strides) => {
                     let elem_bytes = info.dtype.bytes_per_element_ceil();
@@ -944,6 +947,39 @@ mod tests {
         assert_eq!(
             outputs[0].buffer().read_bytes(),
             (0..16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn incompatible_external_input_rejects_unavailable_host_staging() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        let buffer = Buffer::from_external(
+            DeviceKind::RknnNpu,
+            dg_core::MemoryDomain::CudaDevice,
+            BufferDesc::new(16, 1),
+            dg_core::ExternalHandle::from_raw(99),
+            ExternalDropGuard::new(|| {}),
+        )
+        .expect("external device buffer");
+        let input = Tensor::from_buffer(
+            TensorDesc::new(
+                Shape::new([1, 4]),
+                DataType::F32,
+                DataFormat::NHWC,
+                DeviceKind::RknnNpu,
+            ),
+            buffer,
+        )
+        .expect("tensor");
+        let error = backend
+            .run(&[input])
+            .expect_err("incompatible external input must not read empty bytes");
+        assert!(
+            error
+                .to_string()
+                .contains("external buffer is not host-mapped"),
+            "{error}"
         );
     }
 }
