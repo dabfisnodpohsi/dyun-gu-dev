@@ -10,6 +10,7 @@ members = [
     "crates/dg-rknn",
     "crates/dg-rknn-sys",
     "crates/dg-tensorrt",
+    "crates/dg-tensorrt-sys",
     "crates/dg-scheduler",
     "crates/dg-graph",
     "crates/dg-media",

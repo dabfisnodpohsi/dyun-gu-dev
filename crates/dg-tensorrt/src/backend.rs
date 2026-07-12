@@ -13,22 +13,14 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::trace;
 
+#[cfg(feature = "backend")]
+use dg_tensorrt_sys as sys;
+
 use crate::convert::{
     dims_to_shape, engine_dims_to_shape, shape_matches_engine_dims, shape_to_dims,
     trt_dtype_to_datatype, validate_runtime_option,
 };
 use ffi::{Context, CudaStream, DeviceBuffer, Engine, Runtime};
-
-#[cfg(feature = "backend")]
-#[allow(
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    dead_code
-)]
-mod sys {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
 
 #[cfg(not(feature = "backend"))]
 use crate::mock_sys as sys;

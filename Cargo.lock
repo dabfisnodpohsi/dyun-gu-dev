@@ -1598,14 +1598,21 @@ dependencies = [
 name = "dg-tensorrt"
 version = "0.1.0"
 dependencies = [
- "bindgen 0.70.1",
- "cc",
  "dg-core",
  "dg-runtime",
+ "dg-tensorrt-sys",
  "inventory",
  "serde",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "dg-tensorrt-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.70.1",
+ "cc",
 ]
 
 [[package]]

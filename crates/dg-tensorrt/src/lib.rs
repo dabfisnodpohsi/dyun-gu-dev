@@ -2,8 +2,8 @@
 //!
 //! The default build is a no-op placeholder so the workspace stays green on
 //! machines without vendor SDKs. Enabling the `backend` feature switches the
-//! crate to the real TensorRT runtime adapter and requires `TENSORRT_ROOT` to
-//! point at a local SDK installation.
+//! crate to the real TensorRT runtime adapter through `dg-tensorrt-sys`, which
+//! requires `TENSORRT_ROOT` to point at a local SDK installation.
 
 #[cfg(any(feature = "backend", test))]
 mod backend;
