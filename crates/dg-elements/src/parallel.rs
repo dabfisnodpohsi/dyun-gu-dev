@@ -107,6 +107,13 @@ const DISTRIBUTOR_PARAMS: &[ParamField] = &[ParamField {
     ty: ParamType::Enum(DISTRIBUTOR_STRATEGIES),
     required: false,
 }];
+const FILTER_FIELDS: &[&str] = &["mode"];
+const FILTER_MODES: &[&str] = &["pass", "drop"];
+const FILTER_PARAMS: &[ParamField] = &[ParamField {
+    name: "mode",
+    ty: ParamType::Enum(FILTER_MODES),
+    required: false,
+}];
 const EMPTY_PARAMS: &[ParamField] = &[];
 
 inventory::submit! {
@@ -131,6 +138,17 @@ inventory::submit! {
     }
 }
 
+inventory::submit! {
+    dg_graph::ElementDescriptor {
+        kind: "filter",
+        input_ports: &[INPUT_PORT],
+        output_ports: &SINGLE_OUTPUT,
+        params: FILTER_PARAMS,
+        validate: Some(validate_filter),
+        create: create_filter,
+    }
+}
+
 struct Distributor {
     strategy: DistributionStrategy,
 }
@@ -142,6 +160,16 @@ enum DistributionStrategy {
 }
 
 struct Converger;
+
+struct Filter {
+    mode: FilterMode,
+}
+
+#[derive(Clone, Copy)]
+enum FilterMode {
+    Pass,
+    Drop,
+}
 
 impl Element for Distributor {
     fn run(self: Box<Self>, io: ElementIo) -> Result<()> {
@@ -222,6 +250,24 @@ impl Element for Converger {
     }
 }
 
+impl Element for Filter {
+    fn run(self: Box<Self>, io: ElementIo) -> Result<()> {
+        loop {
+            let packet = match io.recv("in")? {
+                Some(packet) => packet,
+                None => continue,
+            };
+            if packet.is_eos() {
+                io.broadcast_eos()?;
+                return Ok(());
+            }
+            if matches!(self.mode, FilterMode::Pass) {
+                io.send("out", packet)?;
+            }
+        }
+    }
+}
+
 fn create_distributor(node: &NodeSpec) -> Result<CreatedElement> {
     let strategy = parse_distributor(node)?;
     Ok(CreatedElement {
@@ -268,6 +314,39 @@ fn validate_converger(node: &NodeSpec) -> Result<()> {
         return Ok(());
     }
     reject_unknown_fields(params_object(node)?, &[])
+}
+
+fn create_filter(node: &NodeSpec) -> Result<CreatedElement> {
+    let mode = parse_filter(node)?;
+    Ok(CreatedElement {
+        element: Box::new(Filter { mode }),
+        handle: ElementHandle::None,
+    })
+}
+
+fn validate_filter(node: &NodeSpec) -> Result<()> {
+    parse_filter(node).map(|_| ())
+}
+
+fn parse_filter(node: &NodeSpec) -> Result<FilterMode> {
+    let params = params_object(node)?;
+    reject_unknown_fields(params, FILTER_FIELDS)?;
+    match params
+        .get("mode")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| Error::Config("field mode must be a string".to_string()))
+        })
+        .transpose()?
+        .unwrap_or("pass")
+    {
+        "pass" => Ok(FilterMode::Pass),
+        "drop" => Ok(FilterMode::Drop),
+        value => Err(Error::Config(format!(
+            "field mode must be one of pass, drop; got {value}"
+        ))),
+    }
 }
 
 fn params_object(node: &NodeSpec) -> Result<&serde_json::Map<String, serde_json::Value>> {

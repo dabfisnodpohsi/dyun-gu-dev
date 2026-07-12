@@ -112,8 +112,10 @@
 | STREAM-01 | 已完成 | cheetah 真实 connector | 提供可安装的 embedded `CheetahRuntimeConnector`，实现 RTSP/HTTP-FLV pull 和 RTMP/WebRTC push；本地 loopback 集成测试通过 | APP-01 |
 | STREAM-02 | 已完成 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
 | MEDIA-02 | 未开始 | frame bridge 与 planner 接入真实数据路径 | avcodec Image/Packet、cheetah AVFrame、dg-core Buffer/Tensor 共享兼容句柄；staging fallback 显式记录域、路径、copy count | MEDIA-01、STREAM-02、MEM-01 |
-| ELEM-01 | 未开始 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
+| ELEM-01 | 已完成 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
 | ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
+
+> ELEM-01 说明：`filter` 以 `mode: pass|drop` 配置，加载期拒绝未知字段和非法值；运行时仅转发/丢弃 packet 并传播 EOS。
 
 > MEDIA-01 说明：已实现真实 JPEG/MJPEG 与视频 decode/encode adapter。`dg-media` 通过
 > `default_registry_builder()` 注册当前编译进来的 avcodec 后端，并使用 `backend_hint` 按

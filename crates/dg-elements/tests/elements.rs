@@ -74,6 +74,17 @@ fn algorithm_element_parameters_are_validated_at_load_time() {
             json!({"strategy": "round_robin"}),
             "unknown field `strategy`",
         ),
+        (
+            "filter",
+            json!({"unknown": true}),
+            "unknown field `unknown`",
+        ),
+        (
+            "filter",
+            json!({"mode": "invalid"}),
+            "field mode must be one of pass, drop",
+        ),
+        ("filter", json!({"mode": 1}), "field mode must be a string"),
     ];
 
     for (kind, params, expected) in invalid {
@@ -231,6 +242,47 @@ fn distributor_and_converger_preserve_all_packets() {
         .run()
         .expect("run graph");
     assert_eq!(report.sinks.get("sink").expect("sink output").len(), 4);
+}
+
+#[test]
+fn filter_pass_and_drop_modes_control_packet_forwarding() {
+    for (mode, expected_packets) in [("pass", 4), ("drop", 0)] {
+        let spec = GraphSpecBuilder::new()
+            .add_node(NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                template: None,
+                params: json!({"count": 4, "shape": [1, 4]}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "filter".to_string(),
+                kind: "filter".to_string(),
+                template: None,
+                params: json!({"mode": mode}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "sink".to_string(),
+                kind: "sink".to_string(),
+                template: None,
+                params: json!({}),
+                ..NodeSpec::default()
+            })
+            .connect("source.out -> filter.in")
+            .connect("filter.out -> sink.in")
+            .build()
+            .expect("build filter graph");
+
+        let report = Graph::new(spec)
+            .expect("build graph")
+            .run()
+            .expect("run filter graph");
+        assert_eq!(
+            report.sinks.get("sink").expect("sink output").len(),
+            expected_packets
+        );
+    }
 }
 
 #[test]
