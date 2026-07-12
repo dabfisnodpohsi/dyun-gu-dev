@@ -62,7 +62,7 @@
 | SCH-01 | 已完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
 | SCH-02 | 已完成 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
 | MEM-01 | 已完成 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
-| MEM-02 | 未开始 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
+| MEM-02 | 进行中 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
 | CAPI-01 | 未开始 | C ABI 后端直接生命周期与能力接口 | 提供 backend 创建/配置/能力查询/销毁，不要求调用者必须构造 Graph；同步头文件、错误码与 C 示例 | RT-01、RT-02 |
 
 > SYS-01 说明：社区 `openvino` crate 的 FFI/link 依赖已隔离到
@@ -89,6 +89,16 @@
 > MEM-01 说明：`dg-core::Buffer` 支持不分配 host backing 的 external-only
 > 表示，外部句柄仍由 `ExternalDropGuard` 通过共享所有权 RAII 管理；host
 > 访问需显式 `map`/`map_with`，MEM-02 的各后端 zero-copy 绑定建立在该句柄表示上。
+
+> MEM-02 说明：TensorRT（CUDA ptr）、RKNN（dma-buf fd via `create_mem_from_fd`）、
+> Sophon（`bm_device_mem_t`）在源域与后端能力兼容时对 external buffer 直接零拷贝
+> 绑定，不兼容/host 输入回退 staging 并通过 `last_copy_count()` 记录拷贝次数，
+> 路径与 copy count 经 `tracing` 结构化输出；上述三后端由各自 `mock_sys` shim
+> 在无 SDK 下编译+测试（copy_count==0 直连、>0 staging）。OpenVINO 目前按域做
+> 绑定选择（host tensor / remote tensor）与 staging+copy count，remote 绑定显式
+> 报错而非静默降级；其真正的 borrowed host / remote tensor 零拷贝需扩展
+> `dg-openvino-sys` 的 tensor 构造并只能在启用 backend feature 的 SDK 环境下
+> 编译验证（外部阻塞，随 TEST-02/HW 收敛），故 MEM-02 暂记为进行中。
 
 > RT-01 说明：`dg-runtime` 增加统一 `RuntimeOption` 字段、`run_with_stream`
 > 以及 `Runtime` 的 submit/poll 入口；厂商字段映射延后到 RT-02、SCH-01 和

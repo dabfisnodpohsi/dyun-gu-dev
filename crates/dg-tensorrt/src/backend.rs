@@ -306,6 +306,7 @@ mod ffi {
     pub(super) struct DeviceBuffer {
         raw: NonNull<c_void>,
         len: usize,
+        owned: bool,
     }
 
     impl DeviceBuffer {
@@ -314,12 +315,28 @@ mod ffi {
             // at least `len` bytes or null.
             let raw = unsafe { sys::trt_cuda_malloc(len) };
             NonNull::new(raw)
-                .map(|raw| Self { raw, len })
+                .map(|raw| Self {
+                    raw,
+                    len,
+                    owned: true,
+                })
                 .ok_or_else(|| {
                     Error::BackendUnavailable(format!(
                         "failed to allocate {len} bytes of CUDA device memory"
                     ))
                 })
+        }
+
+        pub(super) fn from_external_ptr(raw: u64, len: usize) -> Result<Self> {
+            let raw = usize::try_from(raw)
+                .map_err(|_| Error::Backend("CUDA pointer does not fit usize".to_string()))?;
+            let raw = NonNull::new(raw as *mut c_void)
+                .ok_or_else(|| Error::Backend("external CUDA pointer is null".to_string()))?;
+            Ok(Self {
+                raw,
+                len,
+                owned: false,
+            })
         }
 
         pub(super) fn as_mut_ptr(&mut self) -> *mut c_void {
@@ -377,7 +394,9 @@ mod ffi {
         fn drop(&mut self) {
             // SAFETY: `raw` was produced by trt_cuda_malloc and is freed
             // exactly once here.
-            unsafe { sys::trt_cuda_free(self.raw.as_ptr()) };
+            if self.owned {
+                unsafe { sys::trt_cuda_free(self.raw.as_ptr()) };
+            }
         }
     }
 
@@ -431,6 +450,7 @@ pub struct TensorRtBackend {
     outputs: Vec<IoBinding>,
     input_infos: Vec<TensorInfo>,
     output_infos: Vec<TensorInfo>,
+    last_copy_count: usize,
 }
 
 impl TensorRtBackend {
@@ -444,6 +464,7 @@ impl TensorRtBackend {
             outputs: Vec::new(),
             input_infos: Vec::new(),
             output_infos: Vec::new(),
+            last_copy_count: 0,
         }
     }
 
@@ -692,6 +713,7 @@ impl InferBackend for TensorRtBackend {
     }
 
     fn run(&mut self, inputs: &[Tensor]) -> Result<Vec<Tensor>> {
+        self.last_copy_count = 0;
         self.validate_inputs(inputs)?;
         let Some(context) = self.context.as_mut() else {
             return Err(Error::InvalidOption(
@@ -704,9 +726,24 @@ impl InferBackend for TensorRtBackend {
         for (tensor, binding) in inputs.iter().zip(&self.inputs) {
             let dims = shape_to_dims(tensor.desc().shape(), &binding.name)?;
             context.set_input_shape(&binding.name, &dims)?;
-            let bytes = tensor.buffer().read_bytes();
-            let mut buffer = DeviceBuffer::alloc(bytes.len())?;
-            buffer.copy_from_host(&bytes)?;
+            let byte_len = binding
+                .dtype
+                .storage_bytes_for_shape(tensor.desc().shape())?;
+            let mut buffer = if tensor.buffer().domain() == dg_core::MemoryDomain::CudaDevice {
+                let external = tensor.buffer().external();
+                if external.raw == 0 {
+                    return Err(Error::Backend(
+                        "CUDA device buffer is missing an external pointer".to_string(),
+                    ));
+                }
+                DeviceBuffer::from_external_ptr(external.raw, byte_len)?
+            } else {
+                self.last_copy_count = self.last_copy_count.saturating_add(1);
+                let bytes = tensor.buffer().try_read_bytes()?;
+                let mut buffer = DeviceBuffer::alloc(bytes.len())?;
+                buffer.copy_from_host(&bytes)?;
+                buffer
+            };
             context.set_tensor_address(&binding.name, &mut buffer)?;
             input_buffers.push(buffer);
         }
@@ -725,6 +762,16 @@ impl InferBackend for TensorRtBackend {
 
         context.enqueue(&stream)?;
         stream.synchronize()?;
+        trace!(
+            backend = "tensorrt",
+            copy_count = self.last_copy_count,
+            path = if self.last_copy_count == 0 {
+                "zero_copy"
+            } else {
+                "staging"
+            },
+            "TensorRT input binding completed"
+        );
 
         let device = CpuDevice::new();
         let mut outputs = Vec::with_capacity(self.outputs.len());
@@ -742,6 +789,10 @@ impl InferBackend for TensorRtBackend {
             outputs.push(output);
         }
         Ok(outputs)
+    }
+
+    fn last_copy_count(&self) -> usize {
+        self.last_copy_count
     }
 }
 
@@ -795,7 +846,9 @@ inventory::submit! {
 
 #[cfg(all(test, not(feature = "backend")))]
 mod tests {
-    use dg_core::{CpuDevice, DeviceKind};
+    use dg_core::{
+        Buffer, BufferDesc, CpuDevice, DataFormat, DeviceKind, ExternalDropGuard, TensorDesc,
+    };
     use dg_runtime::{BackendOptions, ModelSource, RuntimeOption, TensorRtOptions};
 
     use super::*;
@@ -897,6 +950,59 @@ mod tests {
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
         assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn external_cuda_buffer_uses_direct_binding_without_copy() {
+        let mut backend = TensorRtBackend::new();
+        backend
+            .init(&runtime_option(mock_engine_bytes()))
+            .expect("init");
+
+        let size = 4 * std::mem::size_of::<f32>();
+        // SAFETY: the mock allocator returns an owned allocation of `size`
+        // bytes, and the copy is bounded by that allocation.
+        let ptr = unsafe { crate::mock_sys::trt_cuda_malloc(size) };
+        assert!(!ptr.is_null());
+        let values: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let ptr_value = ptr as usize;
+        // SAFETY: `ptr` points to the allocation above and `values` is valid
+        // for the synchronous mock copy.
+        assert_eq!(
+            unsafe {
+                crate::mock_sys::trt_cuda_memcpy_h2d(ptr, values.as_ptr().cast(), values.len())
+            },
+            1
+        );
+        let external = Buffer::from_external(
+            DeviceKind::CudaGpu,
+            dg_core::MemoryDomain::CudaDevice,
+            BufferDesc::new(size, 1),
+            dg_core::ExternalHandle::from_raw(ptr as usize as u64),
+            ExternalDropGuard::new(move || {
+                // SAFETY: this is the allocation returned above and ownership
+                // is released exactly once by the guard.
+                unsafe { crate::mock_sys::trt_cuda_free(ptr_value as *mut std::ffi::c_void) };
+            }),
+        )
+        .expect("external buffer");
+        let tensor = Tensor::from_buffer(
+            TensorDesc::new(
+                Shape::new([1, 4]),
+                DataType::F32,
+                DataFormat::Auto,
+                DeviceKind::CudaGpu,
+            ),
+            external,
+        )
+        .expect("tensor");
+
+        let outputs = backend.run(&[tensor]).expect("run");
+        assert_eq!(backend.last_copy_count(), 0);
+        assert_eq!(outputs[0].buffer().read_bytes(), values);
     }
 
     #[test]

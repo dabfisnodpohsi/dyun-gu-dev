@@ -9,6 +9,9 @@
 
 #[cfg(feature = "backend")]
 mod backend;
+mod binding;
+
+pub use binding::{select_external_binding_path, ExternalBindingPath};
 
 #[cfg(feature = "backend")]
 pub use backend::{backend_enabled, OpenVINOBackend, OpenVINOOptions};

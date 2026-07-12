@@ -308,4 +308,12 @@ impl Buffer {
     pub fn external(&self) -> ExternalHandle {
         self.external
     }
+
+    /// Returns whether this buffer has an external handle without host storage.
+    pub fn is_external_only(&self) -> bool {
+        matches!(
+            self.storage.as_ref(),
+            BufferStorage::External { bytes: None, .. }
+        )
+    }
 }

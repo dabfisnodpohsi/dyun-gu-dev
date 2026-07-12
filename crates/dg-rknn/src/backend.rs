@@ -12,6 +12,9 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
+#[cfg(not(feature = "backend"))]
+use crate::mock_sys as sys;
+#[cfg(feature = "backend")]
 use dg_rknn_sys as sys;
 
 use crate::io::{
@@ -20,6 +23,7 @@ use crate::io::{
 };
 
 /// Returns `true` when the real RKNN backend is compiled in.
+#[cfg_attr(test, allow(dead_code))]
 pub const fn backend_enabled() -> bool {
     true
 }
@@ -33,6 +37,7 @@ pub struct RknnBackend {
     output_attrs: Vec<sys::rknn_tensor_attr>,
     io_mems: Option<ZeroCopyBinding>,
     zero_copy_failed: bool,
+    last_copy_count: usize,
 }
 
 /// RAII wrapper around an NPU buffer allocated with `rknn_create_mem`.
@@ -43,6 +48,7 @@ struct IoMem {
     context: sys::rknn_context,
     mem: *mut sys::rknn_tensor_mem,
     size: usize,
+    external: bool,
 }
 
 impl IoMem {
@@ -60,6 +66,25 @@ impl IoMem {
             mem,
             size: usize::try_from(size)
                 .map_err(|_| Error::Backend("rknn mem size does not fit in usize".to_string()))?,
+            external: false,
+        })
+    }
+
+    fn from_external_fd(context: sys::rknn_context, fd: i32, size: u32) -> Result<Self> {
+        // SAFETY: `context` is live and the imported fd remains owned by the
+        // caller's external buffer guard for the duration of this wrapper.
+        let mem = unsafe { sys::rknn_create_mem_from_fd(context, fd, size) };
+        if mem.is_null() {
+            return Err(Error::Backend(
+                "rknn_create_mem_from_fd returned a null buffer".to_string(),
+            ));
+        }
+        Ok(Self {
+            context,
+            mem,
+            size: usize::try_from(size)
+                .map_err(|_| Error::Backend("rknn mem size does not fit in usize".to_string()))?,
+            external: true,
         })
     }
 
@@ -155,6 +180,7 @@ impl RknnBackend {
             output_attrs: Vec::new(),
             io_mems: None,
             zero_copy_failed: false,
+            last_copy_count: 0,
         }
     }
 
@@ -352,7 +378,13 @@ impl RknnBackend {
             return Err(Error::Backend("rknn zero-copy binding missing".to_string()));
         };
         for ((mem, tensor), info) in binding.inputs.iter().zip(inputs).zip(&self.input_infos) {
-            let bytes = tensor.buffer().read_bytes();
+            if mem.external {
+                continue;
+            }
+            let bytes = tensor
+                .buffer()
+                .try_read_bytes()
+                .map_err(|error| Error::Backend(error.to_string()))?;
             match &info.strides {
                 Some(strides) => {
                     let elem_bytes = info.dtype.bytes_per_element_ceil();
@@ -396,8 +428,13 @@ impl RknnBackend {
         let context = self.context()?;
         let input_buffers: Vec<Vec<u8>> = inputs
             .iter()
-            .map(|tensor| tensor.buffer().read_bytes())
-            .collect();
+            .map(|tensor| {
+                tensor
+                    .buffer()
+                    .try_read_bytes()
+                    .map_err(|error| Error::Backend(error.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut inputs_set = Vec::with_capacity(input_buffers.len());
         for (index, buffer) in input_buffers.iter().enumerate() {
             inputs_set.push(sys::rknn_input {
@@ -535,6 +572,7 @@ impl InferBackend for RknnBackend {
     }
 
     fn run(&mut self, inputs: &[Tensor]) -> Result<Vec<Tensor>> {
+        self.last_copy_count = 0;
         self.context()?;
         if inputs.len() != self.input_infos.len() {
             return Err(Error::InvalidOption(format!(
@@ -542,6 +580,49 @@ impl InferBackend for RknnBackend {
                 self.input_infos.len(),
                 inputs.len()
             )));
+        }
+
+        let external_compatible = inputs.iter().all(|tensor| {
+            tensor.buffer().domain() == dg_core::MemoryDomain::DmaBuf
+                && tensor.buffer().external().fd.is_some()
+        });
+        if external_compatible {
+            let context = self.context()?;
+            let mut input_mems = Vec::with_capacity(inputs.len());
+            let mut binding = self.setup_zero_copy()?;
+            for ((tensor, info), attr) in
+                inputs.iter().zip(&self.input_infos).zip(&self.input_attrs)
+            {
+                let fd = tensor.buffer().external().fd.ok_or_else(|| {
+                    Error::Backend("RKNN dma-buf input is missing its fd".to_string())
+                })?;
+                let size = match info.strides.as_ref() {
+                    Some(strides) => {
+                        padded_byte_len(&info.shape, strides, info.dtype.bytes_per_element_ceil())?
+                    }
+                    None => info.dtype.storage_bytes_for_shape(&info.shape)?,
+                };
+                let mem = IoMem::from_external_fd(
+                    context,
+                    fd,
+                    u32::try_from(size)
+                        .map_err(|_| Error::InvalidOption("RKNN input is too large".to_string()))?,
+                )?;
+                let mut attr = *attr;
+                let status = unsafe { sys::rknn_set_io_mem(context, mem.mem, &mut attr) };
+                check_status(status, "rknn_set_io_mem")?;
+                input_mems.push(mem);
+            }
+            binding.inputs = input_mems;
+            self.io_mems = Some(binding);
+            self.last_copy_count = 0;
+            trace!(
+                backend = "rknn",
+                copy_count = 0,
+                path = "zero_copy",
+                "RKNN dma-buf input bound with create_mem_from_fd"
+            );
+            return self.run_zero_copy(inputs);
         }
 
         let path = select_io_path(self.options.enable_zero_copy, !self.zero_copy_failed);
@@ -561,10 +642,28 @@ impl InferBackend for RknnBackend {
         }
 
         if self.io_mems.is_some() {
+            self.last_copy_count = inputs.len();
+            trace!(
+                backend = "rknn",
+                copy_count = self.last_copy_count,
+                path = "staging",
+                "RKNN input binding completed through runtime memory"
+            );
             self.run_zero_copy(inputs)
         } else {
+            self.last_copy_count = inputs.len();
+            trace!(
+                backend = "rknn",
+                copy_count = self.last_copy_count,
+                path = "staging",
+                "RKNN input binding completed through host staging"
+            );
             self.run_staging(inputs)
         }
+    }
+
+    fn last_copy_count(&self) -> usize {
+        self.last_copy_count
     }
 }
 
@@ -770,4 +869,117 @@ fn release_outputs(context: sys::rknn_context, outputs: &mut [sys::rknn_output])
     let status =
         unsafe { sys::rknn_outputs_release(context, outputs.len() as u32, outputs.as_mut_ptr()) };
     check_status(status, "rknn_outputs_release")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_sys;
+    use dg_core::{
+        Buffer, BufferDesc, CpuDevice, DataFormat, DeviceKind, ExternalDropGuard, TensorDesc,
+    };
+
+    fn option() -> RuntimeOption {
+        RuntimeOption::new(
+            BackendKind::Rknn,
+            dg_runtime::ModelSource::Bytes(mock_sys::encode_mock_model()),
+            BackendOptions::Rknn(RknnOptions::default()),
+        )
+    }
+
+    #[test]
+    fn mock_adapter_initializes_and_reports_bindings() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        assert_eq!(backend.input_count(), 1);
+        assert_eq!(backend.output_count(), 1);
+        assert_eq!(backend.input_info(0).expect("input").shape.dims(), &[1, 4]);
+        assert_eq!(
+            backend.output_info(0).expect("output").shape.dims(),
+            &[1, 4]
+        );
+    }
+
+    #[test]
+    fn mock_adapter_runs_round_trip_and_rejects_invalid_inputs() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        let info = backend.input_info(0).expect("input").clone();
+        let device = CpuDevice::new();
+        let input = info.allocate(&device).expect("input allocation");
+        input
+            .buffer()
+            .write_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            .expect("input bytes");
+        let outputs = backend.run(std::slice::from_ref(&input)).expect("run");
+        assert!(backend.last_copy_count() > 0);
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            input.buffer().read_bytes()
+        );
+        assert!(matches!(backend.run(&[]), Err(Error::InvalidOption(_))));
+    }
+
+    #[test]
+    fn dma_buf_external_input_binds_without_copy() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        let buffer = Buffer::from_external(
+            DeviceKind::RknnNpu,
+            dg_core::MemoryDomain::DmaBuf,
+            BufferDesc::new(16, 1),
+            dg_core::ExternalHandle::from_fd(7),
+            ExternalDropGuard::new(|| {}),
+        )
+        .expect("external dma-buf");
+        let input = Tensor::from_buffer(
+            TensorDesc::new(
+                Shape::new([1, 4]),
+                DataType::F32,
+                DataFormat::NHWC,
+                DeviceKind::RknnNpu,
+            ),
+            buffer,
+        )
+        .expect("tensor");
+        let outputs = backend.run(&[input]).expect("run");
+        assert_eq!(backend.last_copy_count(), 0);
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            (0..16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn incompatible_external_input_rejects_unavailable_host_staging() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        let buffer = Buffer::from_external(
+            DeviceKind::RknnNpu,
+            dg_core::MemoryDomain::CudaDevice,
+            BufferDesc::new(16, 1),
+            dg_core::ExternalHandle::from_raw(99),
+            ExternalDropGuard::new(|| {}),
+        )
+        .expect("external device buffer");
+        let input = Tensor::from_buffer(
+            TensorDesc::new(
+                Shape::new([1, 4]),
+                DataType::F32,
+                DataFormat::NHWC,
+                DeviceKind::RknnNpu,
+            ),
+            buffer,
+        )
+        .expect("tensor");
+        let error = backend
+            .run(&[input])
+            .expect_err("incompatible external input must not read empty bytes");
+        assert!(
+            error
+                .to_string()
+                .contains("external buffer is not host-mapped"),
+            "{error}"
+        );
+    }
 }
