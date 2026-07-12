@@ -21,12 +21,16 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::{debug, trace};
 
+#[cfg(not(feature = "backend"))]
+use crate::mock_sys as sys;
+#[cfg(feature = "backend")]
 use dg_sophon_sys as sys;
 
 use crate::convert::{self, SophonDataType};
 use crate::validate::{validate_deploy_mode, validate_options};
 
 /// Returns `true` when the real Sophon runtime is compiled in.
+#[cfg_attr(test, allow(dead_code))]
 pub const fn backend_enabled() -> bool {
     true
 }
@@ -66,6 +70,7 @@ impl ModelBuffer {
 struct DeviceMem {
     handle: sys::bm_handle_t,
     mem: sys::bm_device_mem_t,
+    owned: bool,
 }
 
 impl DeviceMem {
@@ -77,7 +82,29 @@ impl DeviceMem {
         let mut mem: sys::bm_device_mem_t = unsafe { std::mem::zeroed() };
         let status = unsafe { sys::bm_malloc_device_byte(handle, &mut mem, bytes) };
         check_status(status, "bm_malloc_device_byte")?;
-        Ok(Self { handle, mem })
+        Ok(Self {
+            handle,
+            mem,
+            owned: true,
+        })
+    }
+
+    fn from_external(handle: sys::bm_handle_t, address: u64, size: usize) -> Result<Self> {
+        let size = u64::try_from(size)
+            .map_err(|_| Error::InvalidOption("Sophon buffer exceeds u64".to_string()))?;
+        // SAFETY: the address and size come from the caller-owned external
+        // buffer, which remains alive through the synchronous launch.
+        let mem = unsafe { sys::bm_mem_from_device(address, size) };
+        if mem.ptr.is_null() || mem.size < usize::try_from(size).unwrap_or(usize::MAX) {
+            return Err(Error::Backend(
+                "bm_mem_from_device returned an invalid device buffer".to_string(),
+            ));
+        }
+        Ok(Self {
+            handle,
+            mem,
+            owned: false,
+        })
     }
 
     fn upload(&self, src: &[u8]) -> Result<()> {
@@ -100,7 +127,9 @@ impl Drop for DeviceMem {
     fn drop(&mut self) {
         // SAFETY: `mem` was produced by `bm_malloc_device_byte` on this handle
         // and is freed exactly once here.
-        unsafe { sys::bm_free_device(self.handle, self.mem) };
+        if self.owned {
+            unsafe { sys::bm_free_device(self.handle, self.mem) };
+        }
     }
 }
 
@@ -111,6 +140,7 @@ pub struct SophonBackend {
     options: SophonOptions,
     input_infos: Vec<TensorInfo>,
     output_infos: Vec<TensorInfo>,
+    last_copy_count: usize,
 }
 
 // SAFETY: the raw BMRuntime handle and runtime pointer are only reachable
@@ -128,6 +158,7 @@ impl SophonBackend {
             options: SophonOptions::default(),
             input_infos: Vec::new(),
             output_infos: Vec::new(),
+            last_copy_count: 0,
         }
     }
 
@@ -366,6 +397,7 @@ impl InferBackend for SophonBackend {
     }
 
     fn run(&mut self, inputs: &[Tensor]) -> Result<Vec<Tensor>> {
+        self.last_copy_count = inputs.len();
         let handle = self.handle()?;
         let p_bmrt = self.runtime()?;
         if inputs.len() != self.input_infos.len() {
@@ -383,15 +415,29 @@ impl InferBackend for SophonBackend {
             let dtype = SophonDataType::from_data_type(info.dtype)?;
             let shape = tensor.desc().shape().clone();
             let expected = convert::byte_size(dtype, &shape)?;
-            let host = tensor.buffer().read_bytes();
-            if host.len() != expected {
-                return Err(Error::InvalidOption(format!(
-                    "Sophon input {index} byte size mismatch: expected {expected}, got {}",
-                    host.len()
-                )));
+            let external = tensor.buffer().external();
+            let (mem, direct) = if tensor.buffer().domain() == dg_core::MemoryDomain::SophonDevice
+                && external.raw != 0
+            {
+                (
+                    DeviceMem::from_external(handle, external.raw, expected)?,
+                    true,
+                )
+            } else {
+                let host = tensor.buffer().try_read_bytes()?;
+                if host.len() != expected {
+                    return Err(Error::InvalidOption(format!(
+                        "Sophon input {index} byte size mismatch: expected {expected}, got {}",
+                        host.len()
+                    )));
+                }
+                let mem = DeviceMem::alloc(handle, expected)?;
+                mem.upload(&host)?;
+                (mem, false)
+            };
+            if direct {
+                self.last_copy_count = self.last_copy_count.saturating_sub(1);
             }
-            let mem = DeviceMem::alloc(handle, expected)?;
-            mem.upload(&host)?;
             input_tensors.push(Self::build_bm_tensor(dtype, &shape, mem.mem)?);
             input_mems.push(mem);
         }
@@ -433,6 +479,12 @@ impl InferBackend for SophonBackend {
         // SAFETY: `handle` is the live device handle used for the launch above.
         let status = unsafe { sys::bm_thread_sync(handle) };
         check_status(status, "bm_thread_sync")?;
+        debug!(
+            backend = "sophon",
+            copy_count = self.last_copy_count,
+            path = "staging",
+            "Sophon input binding completed"
+        );
 
         let device = CpuDevice::new();
         let mut results = Vec::with_capacity(output_tensors.len());
@@ -458,6 +510,10 @@ impl InferBackend for SophonBackend {
         }
 
         Ok(results)
+    }
+
+    fn last_copy_count(&self) -> usize {
+        self.last_copy_count
     }
 }
 
@@ -531,9 +587,12 @@ fn check_status(status: sys::bm_status_t, context: &str) -> Result<()> {
 /// # Safety
 /// `ptr` must be a pointer returned by the vendor library's allocator, or null.
 unsafe fn free_c(ptr: *mut c_void) {
+    #[cfg(feature = "backend")]
     if !ptr.is_null() {
         libc::free(ptr);
     }
+    #[cfg(not(feature = "backend"))]
+    crate::mock_sys::free_c(ptr);
 }
 
 fn create_sophon_backend() -> Box<dyn InferBackend> {
@@ -568,5 +627,85 @@ inventory::submit! {
         name: "sophon",
         create: create_sophon_backend,
         configure: configure_sophon,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_sys;
+
+    fn option() -> RuntimeOption {
+        RuntimeOption::new(
+            BackendKind::Sophon,
+            ModelSource::Bytes(mock_sys::encode_mock_model()),
+            BackendOptions::Sophon(SophonOptions::default()),
+        )
+    }
+
+    #[test]
+    fn mock_adapter_initializes_and_inspects_network() {
+        let mut backend = SophonBackend::new();
+        backend.init(&option()).expect("mock Sophon init");
+        assert_eq!(backend.input_count(), 1);
+        assert_eq!(backend.output_count(), 1);
+        assert_eq!(backend.input_info(0).expect("input").shape.dims(), &[1, 4]);
+    }
+
+    #[test]
+    fn mock_adapter_runs_round_trip_and_rejects_invalid_inputs() {
+        let mut backend = SophonBackend::new();
+        backend.init(&option()).expect("mock Sophon init");
+        let info = backend.input_info(0).expect("input").clone();
+        let device = dg_core::CpuDevice::new();
+        let input = info.allocate(&device).expect("input allocation");
+        input
+            .buffer()
+            .write_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            .expect("input bytes");
+        let outputs = backend.run(std::slice::from_ref(&input)).expect("run");
+        assert!(backend.last_copy_count() > 0);
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            input.buffer().read_bytes()
+        );
+        assert!(matches!(backend.run(&[]), Err(Error::InvalidOption(_))));
+    }
+
+    #[test]
+    fn device_external_input_binds_without_copy() {
+        let mut backend = SophonBackend::new();
+        backend.init(&option()).expect("mock Sophon init");
+        let mut bytes = (0..16).collect::<Vec<u8>>();
+        let pointer = bytes.as_mut_ptr() as usize;
+        let buffer = dg_core::Buffer::from_external(
+            dg_core::DeviceKind::SophonTpu,
+            dg_core::MemoryDomain::SophonDevice,
+            dg_core::BufferDesc::new(16, 1),
+            dg_core::ExternalHandle::from_raw(pointer as u64),
+            dg_core::ExternalDropGuard::new(move || {
+                // SAFETY: ownership of this allocation is transferred to the
+                // external guard exactly once.
+                drop(unsafe { Vec::from_raw_parts(pointer as *mut u8, 16, 16) });
+            }),
+        )
+        .expect("external Sophon memory");
+        std::mem::forget(bytes);
+        let input = dg_core::Tensor::from_buffer(
+            dg_core::TensorDesc::new(
+                dg_core::Shape::new([1, 4]),
+                dg_core::DataType::F32,
+                dg_core::DataFormat::Auto,
+                dg_core::DeviceKind::SophonTpu,
+            ),
+            buffer,
+        )
+        .expect("tensor");
+        let outputs = backend.run(&[input]).expect("run");
+        assert_eq!(backend.last_copy_count(), 0);
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            (0..16).collect::<Vec<_>>()
+        );
     }
 }

@@ -5,9 +5,11 @@
 //! crate to the real RKNN runtime adapter through `dg-rknn-sys`, which requires
 //! `RKNN_SDK_ROOT` to point at a local SDK installation.
 
-#[cfg(feature = "backend")]
+#[cfg(any(feature = "backend", test))]
 mod backend;
 mod io;
+#[cfg(all(test, not(feature = "backend")))]
+mod mock_sys;
 
 pub use dg_runtime::RknnOptions;
 pub use io::{

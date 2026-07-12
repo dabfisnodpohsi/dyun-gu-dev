@@ -12,6 +12,8 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::trace;
 
+use crate::{select_external_binding_path, ExternalBindingPath};
+
 pub use dg_runtime::OpenVINOOptions;
 
 pub fn backend_enabled() -> bool {
@@ -26,6 +28,7 @@ pub struct OpenVINOBackend {
     input_infos: Vec<TensorInfo>,
     output_infos: Vec<TensorInfo>,
     request: Option<InferRequest>,
+    last_copy_count: usize,
 }
 
 impl OpenVINOBackend {
@@ -38,6 +41,7 @@ impl OpenVINOBackend {
             input_infos: Vec::new(),
             output_infos: Vec::new(),
             request: None,
+            last_copy_count: 0,
         }
     }
 
@@ -381,6 +385,7 @@ impl InferBackend for OpenVINOBackend {
     }
 
     fn run(&mut self, inputs: &[Tensor]) -> Result<Vec<Tensor>> {
+        self.last_copy_count = inputs.len();
         if inputs.len() != self.input_infos.len() {
             return Err(Error::InvalidOption(
                 "input count must match model inputs".to_string(),
@@ -405,12 +410,18 @@ impl InferBackend for OpenVINOBackend {
             let ov_shape = dg_openvino_sys::Shape::new(&dims)
                 .map_err(|err| Error::Backend(err.to_string()))?;
             let element_type = Self::map_element_type(info.dtype)?;
+            let binding_path = select_external_binding_path(input.buffer().domain());
+            if binding_path == ExternalBindingPath::RemoteTensor {
+                return Err(Error::Backend(
+                    "OpenVINO remote tensor binding requires a remote-context adapter".to_string(),
+                ));
+            }
             let mut ov_tensor = OvTensor::new(element_type, &ov_shape)
                 .map_err(|err| Error::Backend(err.to_string()))?;
             let raw = ov_tensor
                 .get_raw_data_mut()
                 .map_err(|err| Error::Backend(err.to_string()))?;
-            let bytes = input.buffer().read_bytes();
+            let bytes = input.buffer().try_read_bytes()?;
             if bytes.len() != raw.len() {
                 return Err(Error::Backend("OpenVINO input size mismatch".to_string()));
             }
@@ -423,6 +434,16 @@ impl InferBackend for OpenVINOBackend {
         request
             .infer()
             .map_err(|err| Error::Backend(err.to_string()))?;
+        trace!(
+            backend = "openvino",
+            copy_count = self.last_copy_count,
+            path = if self.last_copy_count == 0 {
+                "zero_copy"
+            } else {
+                "staging"
+            },
+            "OpenVINO input binding completed"
+        );
 
         let device = dg_core::CpuDevice::new();
         let mut outputs = Vec::with_capacity(self.output_infos.len());
@@ -441,6 +462,10 @@ impl InferBackend for OpenVINOBackend {
             outputs.push(output);
         }
         Ok(outputs)
+    }
+
+    fn last_copy_count(&self) -> usize {
+        self.last_copy_count
     }
 }
 

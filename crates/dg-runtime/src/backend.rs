@@ -26,6 +26,11 @@ pub trait InferBackend: Send {
     fn output_infos(&self) -> &[TensorInfo];
     fn run(&mut self, inputs: &[dg_core::Tensor]) -> Result<Vec<dg_core::Tensor>>;
 
+    /// Number of host/device copies performed by the most recent run.
+    fn last_copy_count(&self) -> usize {
+        0
+    }
+
     fn run_with_stream(
         &mut self,
         inputs: &[dg_core::Tensor],
