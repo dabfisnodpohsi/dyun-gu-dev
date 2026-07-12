@@ -51,16 +51,16 @@
 
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
-| CORE-01 | 进行中 | 完成 device/memory/stream 抽象 | 增加可注册的非 CPU Device/Stream/Event adapter 与 MemoryPool/Allocator；上层不直接依赖厂商 FFI | SYS-01 至 SYS-04 |
-| SYS-01 | 进行中 | `dg-openvino-sys` 分层 | FFI/link 只在 `-sys`；`dg-openvino` 保持 safe wrapper；默认构建无 SDK | 无 |
-| SYS-02 | 进行中 | `dg-rknn-sys` 分层 | bindgen/build/link/unsafe 移入 `dg-rknn-sys`；安全 crate 仅 RAII 与 `InferBackend` | 无 |
-| SYS-03 | 进行中 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
-| SYS-04 | 进行中 | `dg-sophon-sys` 分层 | BMRuntime/bmlib bindings、link 和 raw calls 移入 `dg-sophon-sys` | 无 |
+| CORE-01 | 已完成 | 完成 device/memory/stream 抽象 | 增加可注册的非 CPU Device/Stream/Event adapter 与 MemoryPool/Allocator；上层不直接依赖厂商 FFI | SYS-01 至 SYS-04 |
+| SYS-01 | 已完成 | `dg-openvino-sys` 分层 | FFI/link 只在 `-sys`；`dg-openvino` 保持 safe wrapper；默认构建无 SDK | 无 |
+| SYS-02 | 已完成 | `dg-rknn-sys` 分层 | bindgen/build/link/unsafe 移入 `dg-rknn-sys`；安全 crate 仅 RAII 与 `InferBackend` | 无 |
+| SYS-03 | 已完成 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
+| SYS-04 | 已完成 | `dg-sophon-sys` 分层 | BMRuntime/bmlib bindings、link 和 raw calls 移入 `dg-sophon-sys` | 无 |
 | BE-01 | 未开始 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
-| RT-01 | 进行中 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
-| RT-02 | 进行中 | 运行期 SDK/设备能力探测 | 各后端 init 查询 SDK 版本、设备、精度和部署能力；静态表仅为无硬件 fallback；不支持时给出明确诊断且不静默降级 | SYS-01 至 SYS-04 |
-| SCH-01 | 完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
-| SCH-02 | 进行中 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
+| RT-01 | 已完成 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
+| RT-02 | 已完成 | 运行期 SDK/设备能力探测 | 各后端 init 查询 SDK 版本、设备、精度和部署能力；静态表仅为无硬件 fallback；不支持时给出明确诊断且不静默降级 | SYS-01 至 SYS-04 |
+| SCH-01 | 已完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
+| SCH-02 | 已完成 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
 | MEM-01 | 未开始 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
 | MEM-02 | 未开始 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
 | CAPI-01 | 未开始 | C ABI 后端直接生命周期与能力接口 | 提供 backend 创建/配置/能力查询/销毁，不要求调用者必须构造 Graph；同步头文件、错误码与 C 示例 | RT-01、RT-02 |
@@ -110,7 +110,7 @@
 | APP-01 | 已完成 | CLI/C API 链接 media/stream registry | feature-gated 链接 `dg-media`/`dg-stream`；`list-elements` 和配置加载能发现八个 element；默认 build 仍无外部 SDK | CFG-02、CFG-03 |
 | MEDIA-01 | 已完成 | avcodec-rs 真实 adapter | `avcodec` feature 通过 RegistryBuilder 驱动 Decoder/Encoder/ImageProcessor；x86 software codec 测试覆盖真实码流；AvError 映射完整 | APP-01 |
 | STREAM-01 | 已完成 | cheetah 真实 connector | 提供可安装的 embedded `CheetahRuntimeConnector`，实现 RTSP/HTTP-FLV pull 和 RTMP/WebRTC push；本地 loopback 集成测试通过 | APP-01 |
-| STREAM-02 | 进行中 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
+| STREAM-02 | 已完成 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
 | MEDIA-02 | 未开始 | frame bridge 与 planner 接入真实数据路径 | avcodec Image/Packet、cheetah AVFrame、dg-core Buffer/Tensor 共享兼容句柄；staging fallback 显式记录域、路径、copy count | MEDIA-01、STREAM-02、MEM-01 |
 | ELEM-01 | 未开始 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
 | ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
