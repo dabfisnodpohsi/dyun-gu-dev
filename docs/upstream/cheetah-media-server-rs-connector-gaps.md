@@ -1,257 +1,273 @@
-# cheetah-media-server-rs：`cheetah-connector` 复核与 STREAM-01 仍缺失能力
+# cheetah-media-server-rs：`cheetah-connector` 复核与 STREAM-01 能力状态
 
-> 本文是对 [`cheetah-media-server-rs-gaps.md`](cheetah-media-server-rs-gaps.md) 的更新复核。
-> 原文基于 pinned rev `182621c`，彼时上游缺少任何高层 connector；本文基于上游最新
-> `main` HEAD 复核，确认上游已新增 `cheetah-connector` crate 并落地了原文大部分缺口，
-> 仅记录 `dyun-gu-dev` 实现 [STREAM-01](../design-remaining-tasks.md)（真实
-> cheetah connector：RTSP/HTTP-FLV pull + RTMP/WebRTC push + 本地 loopback 集成测试）
-> 时**仍需上游补齐**的能力。
+> 本文是对 [`cheetah-media-server-rs-gaps.md`](cheetah-media-server-rs-gaps.md)
+> 及此前 connector 复核的更新审计。
+> 原文基于 pinned rev `182621c`，此前复核基于上游 `206fc11`；本次基于上游
+> `48cc74e` 重新核对实际代码与构建结果，确认上游已经补齐 STREAM-01 所需的
+> RTSP/HTTP-FLV pull、RTMP/WebRTC push 四项能力，并提供可选的 socket-free
+> loopback 路径。仅 RTMP→HTTP-FLV wire metadata 的逐字段保真仍不完整，该问题属于
+> STREAM-02。
 
 ## 0. 复核基线
 
 - `dyun-gu-dev` 当前锁定 rev（`crates/dg-stream-cheetah/Cargo.toml`）：
   `182621c393eff754660a445d174a61e41622c660`。
+  本次未修改该依赖；升级仍需由 `dyun-gu-dev` 后续变更完成。
 - 本文复核的上游 HEAD：
-  `206fc11bf137394293ef274576058a3b8ce060cc`（`Merge pull request #81 ... sdk-gaps-900`）。
-- 新增 crate：`crates/sdk/cheetah-connector`（提交 `dc1582c feat: implement SDK gaps S1-S7`
-  及后续修复）。
-- 本文中的“现有 API/行为”均指 HEAD `206fc11` 可核对的代码；“建议 capability”明确标为
-  proposed。
+  `48cc74e050c4bf20dc7d8b111b83f2ab00b7999c`
+  （Merge pull request #84 from ChungTak/devin/1783755269-webrtc-push）。
+- 自上次 `206fc11` 复核以来的关键落地：
+  - PR #82：`plan2 residual gaps S1/S4/S5/S6/S7`，覆盖选项透传、就绪信号、
+    socket-free loopback、metadata/error 相关残余缺口。
+  - PR #83：RTSP pull adapter。
+  - PR #84：WebRTC push adapter。
+- 本次构建验证：
+  在上游 `48cc74e` 执行
+  `cargo build -p cheetah-connector --features full` 成功。
+- 以下“现有 API/行为”均指上游 HEAD `48cc74e` 可核对的代码；状态以实际
+  `open_pull`/`open_push` 分支和测试为准，而非仅依据 capability 声明。
 
 ## 1. 结论摘要
 
-| 原文缺口 | HEAD 现状 | STREAM-01 是否还阻塞 |
+| 要求 | HEAD 现状 | STREAM-01 是否阻塞 |
 |---|---|---|
-| Gap 1 高层 connector facade | **部分**：facade/builder/handles 已就绪，但 RTSP pull、WebRTC push 声明支持却返回 `UnsupportedProtocol` | 是（RTSP pull / WebRTC push） |
-| Gap 2 内存 loopback | **部分**：RTMP→HTTP-FLV loopback 走 localhost TCP（`ProtocolFraming`），非纯内存；WebRTC 有真进程内 media fixture | 视 CI 是否要求 socket-free 而定 |
-| Gap 3 流式 HTTP-FLV `SubscriberSource` | **已实现** | 否 |
-| Gap 4 WebRTC 进程内 media peer | **已实现（fixture 级）**，绕过 ICE/DTLS/SRTP/UDP | 否（fixture 足够）/ 是（若要真 transport） |
-| Gap 5 typed error | **已实现**（`ConnectorError`），个别 `SdkError` 映射仍粗糙 | 否（有小瑕疵） |
-| Gap 6 metadata 保真 facade | **部分**：track 与关键帧元数据在受测路径保真，但 wire 重建丢失若干字段 | STREAM-02 阻塞 |
+| RTSP pull | **已接线**：`open_pull(Protocol::Rtsp, ...)` 调用 RTSP adapter，不再返回 `UnsupportedProtocol` | 否 |
+| HTTP-FLV pull | **已实现**：流式 `SubscriberSource` 已接入 connector | 否 |
+| RTMP push | **已实现**：`open_push(Protocol::Rtmp, ...)` 调用 RTMP adapter | 否 |
+| WebRTC push | **已接线**：`open_push(Protocol::WebRtc, ...)` 调用 WHIP/WebRTC adapter，不再返回 `UnsupportedProtocol` | 否 |
+| capability matrix | **一致**：四个必需 `(protocol, direction)` 均由 `supports()` 声明并有实际 adapter 分支 | 否 |
+| socket-free loopback | **已提供**：`LoopbackLayer::EngineOnlyBypassWire` 直接使用 engine `StreamManager` | 否 |
+| metadata 保真 | **部分**：RTMP→HTTP-FLV wire 路径仍丢失/规范化部分 `AVFrame` 字段 | 仅 STREAM-02 |
 
-**一句话**：上游 `cheetah-connector` 已让 **HTTP-FLV pull + RTMP push + 二者 loopback**
-可用；`dyun-gu-dev` 可据此实现 STREAM-01 的 loopback 验收路径。但 **RTSP pull 与
-WebRTC push 尚未接线**，且若干可配置项/保真度/socket-free 语义仍缺，需上游补齐。
+**一句话**：上游 `48cc74e` 已满足 STREAM-01 的完整能力矩阵：
+**RTSP pull + HTTP-FLV pull + RTMP push + WebRTC push + socket-free local loopback**。
+`dyun-gu-dev` 侧只需将 `dg-stream-cheetah` 的依赖 rev bump 到包含
+`cheetah-connector` 及上述提交的版本，并实现相应 facade 集成测试。STREAM-02
+仍受 R7 的 metadata 保真限制影响。
 
-## 2. 已可直接消费的能力（无需上游改动）
+## 2. 已可直接消费的能力
 
-以下已在 HEAD 落地，`dyun-gu-dev` 直接消费即可，请上游**保持稳定不要回退**：
+以下能力已在 HEAD 落地：
 
-- 高层 facade：`RuntimeConnector` trait、`EngineConnector`、`ConnectorBuilder`
-  （`crates/sdk/cheetah-connector/src/connector.rs`、`.../src/engine_bootstrap.rs`）。
-- 句柄：`PullHandle`（`tracks()`/`recv()`/`close()`，并实现 `SubscriberSource`）、
-  `PushHandle`（`update_tracks()`/`push_frame()`/`take_keyframe_requests()`/`close()`，
-  并实现 `PublisherSink`）、`LoopbackPair`（`.../src/handles.rs`）。
-- 流式 HTTP-FLV pull：`open_http_flv_subscriber`（`crates/protocols/http-flv/module/src/pull/streaming.rs`），
-  含 reconnect/backoff、bounded queue、cancel，经 `open_http_flv_pull` 接入 `PullHandle`。
-- RTMP push：`open_rtmp_push`（`.../src/push/rtmp.rs`）。
-- 内存 loopback：`open_in_memory_loopback`（`.../src/loopback.rs`），默认拓扑
-  RTMP push → HTTP-FLV pull。
-- typed error：`ConnectorError`（`.../src/error.rs`），带 `protocol()`/`retryable()`/`source()`。
-- 能力矩阵：`Protocol`/`Direction`/`supports()`（`.../src/protocol.rs`）。
-- feature 门控：`rtsp`/`http-flv`/`rtmp`/`webrtc`/`loopback`/`full`（`.../Cargo.toml`）。
-- **bridge 兼容性已确认**：`AVFrame`、`TrackInfo`、`MediaKind`、`CodecId`、`FrameFormat`、
-  `Timebase`、`CodecExtradata`、`TrackReadiness`、`AacRtpPacketization`、`Rational32`、
-  `DispatchResult` 在 `182621c` → `206fc11` 之间**无重命名/移动/删除/签名变化**；
-  `SubscriberSource::tracks()` 为带默认实现的新增方法，向后兼容。故 `dyun-gu-dev` 升级
-  rev 不会破坏现有 `crates/dg-stream/src/bridge.rs`。
+- 高层 facade：`RuntimeConnector`、`EngineConnector`、`ConnectorBuilder`
+  （`crates/sdk/cheetah-connector/src/connector.rs`、
+  `.../src/engine_bootstrap.rs`）。
+- 句柄：`PullHandle`（`tracks()`/`recv()`/`close()`，并实现
+  `SubscriberSource`）、`PushHandle`（`update_tracks()`/`push_frame()`/
+  `take_keyframe_requests()`/`wait_ready()`/`close()`，并实现
+  `PublisherSink`）、`LoopbackPair`（`.../src/handles.rs`）。
+- RTSP pull：`pull::rtsp::open_rtsp_pull`。
+- 流式 HTTP-FLV pull：`pull::http_flv::open_http_flv_pull` 及底层
+  `open_http_flv_subscriber`，含 reconnect/backoff、bounded queue、cancel。
+- RTMP push：`push::rtmp::open_rtmp_push`。
+- WebRTC push：`push::webrtc::open_webrtc_push`，通过 WHIP signaling 和
+  WebRTC driver 生成可写的 `PublisherSink`。
+- loopback：`open_in_memory_loopback`。默认 RTMP→HTTP-FLV 拓扑仍是
+  `ProtocolFraming`（localhost TCP），但可请求 `EngineOnlyBypassWire` 获得
+  无 socket 的 engine-only 路径；WebRTC 另有 media fixture。
+- typed error：`ConnectorError`，带 `protocol()`/`retryable()`/`source()`；
+  泛化 `SdkError::Unavailable` 不再臆测为 RTMP。
+- 能力矩阵：`Protocol`/`Direction`/`supports()`，按 feature 且按实际 adapter
+  接线状态判定。
+- feature 门控：`rtsp`/`http-flv`/`rtmp`/`webrtc`/`loopback`/`full`。
 
-## 3. 仍缺失能力清单（STREAM-01 所需）
+## 3. R1..R8 复核结果
 
-### R1：RTSP pull 未接线（声明支持但返回 `UnsupportedProtocol`）
+### R1：RTSP pull adapter —— **FULLY IMPLEMENTED**
 
-**优先级：P0。**
+上游已将 RTSP pull 接入高层 connector：
 
-**现状。** `supports(Protocol::Rtsp, Direction::Pull)` 返回 `true`
-（`crates/sdk/cheetah-connector/src/protocol.rs`，`supports()`），但
-`EngineConnector::open_pull` 对 RTSP 直接返回错误：
+- `crates/sdk/cheetah-connector/src/pull/rtsp.rs:21-60`：
+  `open_rtsp_pull(engine, url, options)` 解析 stream key/source peer，
+  将 `ConnectorPullOptions.subscriber` 和 cancellation 传入
+  `cheetah_rtsp_module::pull::open_rtsp_pull`，并包装为 `PullHandle`。
+- `crates/sdk/cheetah-connector/src/connector.rs:121-124`：
+  `EngineConnector::open_pull` 的 `Protocol::Rtsp` 分支实际调用
+  `crate::pull::rtsp::open_rtsp_pull(...)`，不再返回
+  `ConnectorError::UnsupportedProtocol`。
+- `crates/sdk/cheetah-connector/tests/rtsp_pull.rs:163-166,197-204`：
+  通过公开 connector 打开 RTSP pull，并覆盖关闭、取消及 bounded queue。
 
-```rust
-// crates/sdk/cheetah-connector/src/connector.rs（open_pull 内）
-#[cfg(feature = "rtsp")]
-Protocol::Rtsp => Err(ConnectorError::UnsupportedProtocol {
-    protocol,
-    direction: Direction::Pull,
-}),
+**已落地。** STREAM-01 所需的 RTSP `SubscriberSource` 已可通过
+`open_pull(Protocol::Rtsp, ...)` 获取。
+
+### R2：WebRTC push adapter —— **FULLY IMPLEMENTED**
+
+上游已将 WebRTC push 接入高层 connector：
+
+- `crates/sdk/cheetah-connector/src/push/webrtc.rs:78-158`：
+  `WebRtcPublisherSink` 实现 `PublisherSink`，支持 tracks、frame、close、
+  keyframe request 和有界 command/frame buffer。
+- `.../src/push/webrtc.rs:163-220`：
+  `open_webrtc_push(engine, url, options)` 规范化 WHIP URL、启动 WebRTC
+  driver、创建 signaling/background task，并返回 `PushHandle`。
+- `crates/sdk/cheetah-connector/src/connector.rs:156-159`：
+  `EngineConnector::open_push` 的 `Protocol::WebRtc` 分支实际调用
+  `crate::push::webrtc::open_webrtc_push(...)`，不再返回
+  `ConnectorError::UnsupportedProtocol`。
+- `crates/sdk/cheetah-connector/tests/webrtc_push.rs:358-381`：
+  本地 WHIP answerer 验证 `wait_ready()`、track 更新及 H.264 keyframe
+  到达对端。
+
+**已落地。** STREAM-01 所需的 WebRTC `PublisherSink` 已可通过
+`open_push(Protocol::WebRtc, ...)` 获取。该 adapter 测试使用本地 signaling/
+driver peer，不依赖外部服务。
+
+### R3：能力矩阵与实际实现一致 —— **FULLY IMPLEMENTED**
+
+- `crates/sdk/cheetah-connector/src/protocol.rs:35-56`：
+  `supports()` 按 feature 且按 adapter wired 状态返回结果：
+  - RTSP pull
+  - HTTP-FLV pull
+  - RTMP push
+  - WebRTC push
+- `crates/sdk/cheetah-connector/src/connector.rs:115-174`：
+  四个声明支持的方向分别进入实际 adapter；其他方向仍返回
+  `UnsupportedProtocol`。
+- `crates/sdk/cheetah-connector/src/engine_bootstrap.rs:227-264`：
+  feature 未启用时返回 `FeatureDisabled`，而不是虚假宣称支持。
+
+**已落地。** `supports()` 与 `open_pull`/`open_push` 的实际行为一致，
+此前“声明支持但返回 `UnsupportedProtocol`”的矛盾已关闭。
+
+### R4：connector 层选项透传 —— **FULLY IMPLEMENTED**
+
+- `crates/sdk/cheetah-connector/src/pull/http_flv.rs:25-43`：
+  HTTP-FLV reconnect、read limits、buffer size、cancel 均传到底层；
+  `SubscriberOptions.queue_capacity` 在未显式指定 buffer 时作为 buffer
+  capacity。
+- `.../src/pull/rtsp.rs:39-45`：
+  RTSP 专用选项与 `SubscriberOptions` 被传到底层 RTSP pull。
+- `.../src/push/rtmp.rs:174-198`：
+  RTMP command/write queue、read buffer、chunk size、ACK window 等
+  `RtmpPushExtras` 被用于构造 driver config。
+- `.../src/loopback.rs:133-153`：
+  `LoopbackOptions.queue_capacity` 传入 HTTP-FLV buffer 和 RTMP command/write
+  queues；`.../src/loopback.rs:190-193` 在 engine-only 路径传入 subscriber。
+- 对应覆盖见 `tests/options_passthrough.rs`。
+
+**已落地。** 原先硬编码 HTTP-FLV buffer/read 参数及未使用 loopback queue
+的问题已修复。
+
+### R5：`PushHandle::wait_ready()` 真实就绪语义 —— **FULLY IMPLEMENTED**
+
+- `crates/sdk/cheetah-connector/src/handles.rs:107-112,123-136`：
+  `PushHandle` 持有 protocol adapter 提供的 `tokio::sync::watch` readiness
+  receiver。
+- `.../src/handles.rs:177-196`：
+  `wait_ready()` 在初始未就绪时等待 channel 变化，并将 channel drop/失败
+  映射为 typed `ConnectorError`。
+- RTMP 在 publish 状态建立后发送 ready：
+  `.../src/push/rtmp.rs:224-231,268-269`。
+- WebRTC 在 lifecycle `Connected` 且 media mids 可用后发送 ready：
+  `.../src/push/webrtc.rs:279-289,324-355`。
+- WebRTC readiness 测试见 `tests/webrtc_push.rs:335-346`；loopback 调用见
+  `tests/loopback_layers.rs:95,164`。
+
+**已落地。** 推流侧不再需要依赖 sleep/轮询猜测可写时机。
+
+### R6：socket-free/in-memory loopback —— **FULLY IMPLEMENTED（默认层级有 caveat）**
+
+上游现在同时提供 protocol-framing 和真正不经 socket 的 engine-only 路径：
+
+- `crates/sdk/cheetah-connector/src/loopback.rs:34-69`：
+  `open_in_memory_loopback` 根据 `LoopbackLayer` 选择路径。
+- `.../src/loopback.rs:169-208`：
+  `engine_only_loopback` 直接使用 engine 的 `StreamManager` 打开
+  publisher/subscriber，不构造 URL、不连接 TCP socket，返回
+  `LoopbackLayer::EngineOnlyBypassWire`。
+- `crates/sdk/cheetah-connector/tests/loopback_layers.rs:75-123`：
+  engine-only 路径完成 H.264/AAC frame round-trip，证明可用于本地集成测试。
+
+需要明确区分：
+
+- 默认 `LoopbackLayer::ProtocolFraming` 仍通过 service registry 获取端点，
+  使用 localhost TCP RTMP/HTTP-FLV（`loopback.rs:72-166`）。
+- 严格的“不开 socket”验收应设置
+  `LoopbackOptions.preferred_layer = LoopbackLayer::EngineOnlyBypassWire`。
+
+**已落地。** socket-free 路径已具备且有测试；默认 protocol-framing 的行为
+已在 `options.rs:145-157` 明确记录。
+
+### R7：RTMP→HTTP-FLV metadata 逐字段保真 —— **PARTIAL（STREAM-02）**
+
+受测路径仍能保留 connector 运行所需及测试覆盖的主要字段，包括：
+`track_id`、`media_kind`、`codec`、`format`、`pts`、`dts`、`timebase`、
+关键帧标志、payload，以及 track 级 codec/clock rate/sample rate/channels/
+extradata。证据见 `tests/metadata_conformance.rs:80-160`。
+
+但 RTMP FLV wire serialization 后由 ingress 重建 `AVFrame`，以下字段仍不
+逐字段保真：
+
+- `duration`/`duration_us` 不随 FLV 传输，重建后为 0。
+- `origin` 被 ingress 设为 `FrameOrigin::Ingest`。
+- `side_data` 不整体保留，ingress 会生成/替换 source timestamp 等数据。
+- 音频 flags 被规范化为 `START_OF_AU | END_OF_AU`；视频非关键帧的
+  `DISCONTINUITY`、`CORRUPT`、`DROPPABLE`、`GENERATED` 等不保证保留。
+- `pts_us`/`dts_us` 由重建 timebase 重新计算。
+- track extradata 可能被规范化（例如 H.264 `avcc: None` 变为解析后的
+  `Some(...)`）。
+
+证据：
+
+- `crates/foundation/cheetah-codec/src/flv_ingress.rs:247-263,440-455,539-545`
+- `crates/sdk/cheetah-connector/src/push/rtmp.rs:120-141`
+- `crates/sdk/cheetah-connector/tests/metadata_conformance.rs:82,136-160`
+
+**仍需后续处理。** STREAM-01 主验收不被该项阻塞；STREAM-02 应继续选择：
+在 FLV 映射中扩展必要 metadata，或在 connector 契约中明确声明不保真字段并
+维持对应 conformance 测试。
+
+### R8：`SdkError → ConnectorError` 不应臆测 RTMP —— **FULLY IMPLEMENTED**
+
+- `crates/sdk/cheetah-connector/src/error.rs:152-165`：
+  `SdkError::Unavailable` 不再映射成硬编码的
+  `ConnectorError::Connect { protocol: Protocol::Rtmp, ... }`，而是映射为
+  `ConnectorError::Internal`，避免错误标注协议。
+- 句柄已知协议时继续使用
+  `handles.rs:215-230` 的 `map_sdk_error(protocol, operation, err)` 注入
+  正确上下文。
+- `tests/error_conformance.rs:63-69` 验证泛化 `Unavailable` 结果没有 protocol
+  且不可重试。
+
+**已落地。** 随 RTSP/WebRTC adapter 增加，泛化错误映射不会再错误归因到 RTMP。
+
+## 4. 上游验收结果
+
+在 `crates/sdk/cheetah-connector` 内，本次复核确认以下验收项已经满足：
+
+1. `supports()` 与四个实际 `open_pull`/`open_push` 分支一致（R3）。
+2. RTSP pull 具备真实 streaming `recv`、取消、关闭和 bounded queue 覆盖；
+   adapter 已接线（R1）。
+3. WebRTC push 具备真实 `open_push`、WHIP signaling、driver media publish
+   路径和 keyframe peer round-trip 测试（R2）。
+4. 提供并测试 `EngineOnlyBypassWire` socket-free loopback；默认
+   `ProtocolFraming` localhost TCP caveat 已明确标注（R6）。
+5. metadata conformance 明确记录 RTMP→HTTP-FLV 的不保真集合；该项仍为
+   STREAM-02 的 R7 残余，不阻塞 STREAM-01。
+6. `wait_ready()` 使用 RTMP publish/WebRTC connected 的真实 readiness channel，
+   并有测试覆盖（R5）。
+
+构建验证：
+
+```text
+cargo build -p cheetah-connector --features full
+Finished `dev` profile [unoptimized + debuginfo]
 ```
 
-`crates/sdk/cheetah-connector/src/pull/` 下也没有 RTSP adapter（仅 `http_flv.rs`）。
+## 5. `dyun-gu-dev` 侧后续工作
 
-**为何阻塞 STREAM-01。** STREAM-01 验收明确要求 RTSP pull。当前无法通过 connector 获得
-RTSP 的 `SubscriberSource`。
-
-**建议 capability（proposed）。** 参照 `open_http_flv_pull` 增加
-`crate::pull::rtsp::open_rtsp_pull(engine, url, options) -> Result<PullHandle, ConnectorError>`，
-基于 `crates/protocols/rtsp/driver-tokio` 的 `start_tcp_client` 组合出长生命周期、
-带 track 发现、reconnect、bounded queue、cancel 的流式 `SubscriberSource`，并在
-`open_pull` 的 `Protocol::Rtsp` 分支调用它。
-
-### R2：WebRTC push 未接线（声明支持但返回 `UnsupportedProtocol`）
-
-**优先级：P0。**
-
-**现状。** `supports(Protocol::WebRtc, Direction::Push)` 返回 `true`，但
-`EngineConnector::open_push` 对 WebRTC 返回：
-
-```rust
-// crates/sdk/cheetah-connector/src/connector.rs（open_push 内）
-#[cfg(feature = "webrtc")]
-Protocol::WebRtc => Err(ConnectorError::UnsupportedProtocol {
-    protocol,
-    direction: Direction::Push,
-}),
-```
-
-WebRTC 目前只有 `MediaLoopbackHarness` fixture（经 `open_in_memory_loopback` 的
-`SameProtocol` 拓扑可达），没有面向真实 URL 的 `open_push` adapter。
-
-**为何阻塞 STREAM-01。** STREAM-01 验收要求 WebRTC push。当前无法通过 connector 获得
-WebRTC 的 `PublisherSink`。
-
-**建议 capability（proposed）。** 增加
-`crate::push::webrtc::open_webrtc_push(engine, url, options) -> Result<PushHandle, ConnectorError>`，
-基于 `crates/protocols/webrtc/driver-tokio` 的 `spawn_driver` 组合出 WHIP/信令 + media
-发布路径，产出实现 `PublisherSink` 的句柄，并在 `open_push` 的 `Protocol::WebRtc` 分支
-调用它。
-
-### R3：能力矩阵与实现不一致（`supports()` 说谎）
-
-**优先级：P0（正确性）。**
-
-`supports()` 声明 RTSP pull 与 WebRTC push 支持，但实际调用返回 `UnsupportedProtocol`
-（见 R1、R2）。这让外部 integrator 无法据 `supports()` 做可靠的能力判定。
-
-**建议。** 二选一并加 conformance 测试：要么按 R1/R2 实现，使 `supports()` 与
-`open_*` 行为一致；要么在实现落地前，让 `supports()` 对尚未接线的组合返回 `false`
-（避免宣称能力）。当前 `tests/capability_matrix.rs` 编码了这一矛盾，应随之修正。
-
-### R4：connector 层选项未透传（HTTP-FLV read limits/buffer、loopback queue）
-
-**优先级：P1。**
-
-**现状。** `open_http_flv_pull` 硬编码读参数，未透传 `ConnectorPullOptions`：
-
-```rust
-// crates/sdk/cheetah-connector/src/pull/http_flv.rs
-let subscriber_options = HttpFlvSubscriberOptions {
-    read_limits: Default::default(),
-    reconnect,
-    buffer_size: 64,
-    cancel: options.cancel,
-};
-```
-
-`ConnectorPullOptions.subscriber` 仅校验队列容量；`LoopbackOptions.queue_capacity`
-声明了但 RTMP→HTTP-FLV loopback 未使用（`src/loopback.rs`、`src/push/rtmp.rs` 用各自
-固定队列）。
-
-**为何影响 STREAM-01。** integrator 无法通过公共 options 控制 HTTP-FLV 的
-read limits/buffer size 与 loopback 队列深度（背压/内存上限不可调）。
-
-**建议。** 将 `ConnectorPullOptions`（含 `SubscriberOptions` 的 queue capacity、
-HTTP-FLV read limits/buffer size）与 `LoopbackOptions.queue_capacity` 真正透传到底层
-subscriber/loopback。
-
-### R5：`PushHandle::wait_ready()` 为 stub，恒返回 Ok
-
-**优先级：P1。**
-
-```rust
-// crates/sdk/cheetah-connector/src/handles.rs
-// TODO: wire protocol-specific readiness signalling.
-Ok(())
-```
-
-**为何影响 STREAM-01。** push 侧无法可靠知道对端/track 就绪，loopback 与真实推流都要靠
-sleep/轮询兜底，测试易 flaky。
-
-**建议。** 实现协议相关的 readiness 信号（RTMP publish onStatus、WebRTC connected 等），
-让 `wait_ready()` 真正等待可写状态。
-
-### R6：默认 loopback 非 socket-free（走 localhost TCP）
-
-**优先级：P1（取决于 CI 约束）。**
-
-**现状。** `open_in_memory_loopback` 的默认 `Cross { push: Rtmp, pull: HttpFlv }` 会
-从 engine 的 service registry 取 TCP 端点、拼 `rtmp://127.0.0.1:.../` 与
-`http://127.0.0.1:.../` 并开真实协议 client，上报 `LoopbackLayer::ProtocolFraming`
-（`crates/sdk/cheetah-connector/src/loopback.rs`）。这是“嵌入式 engine + localhost
-协议 framing”集成测试，并非原文 Gap 2 期望的“无 socket、纯内存 transport”。
-
-**为何影响 STREAM-01。** 若 `dyun-gu-dev` CI 要求**不开任何 socket**（原文验收第 3 条），
-则该 loopback 不满足；且并发/端口占用下 ephemeral 端口路径可能 flaky。
-
-**建议。** 提供真正的进程内 transport（protocol core 直连内存管道），或至少在 API/文档中
-明确标注默认 loopback 使用 ephemeral localhost，并提供一个 socket-free 的
-`LoopbackLayer`（如 `EngineOnlyBypassWire`）作为可选路径，供严格 CI 使用。
-
-### R7：RTMP→HTTP-FLV 路径 metadata 未完全保真
-
-**优先级：P1（阻塞 STREAM-02，不阻塞 STREAM-01 主验收）。**
-
-**现状。** 受测路径保真了 `track_id/media_kind/codec/format/pts/dts/timebase/key-flag/
-payload` 与 track 级 `codec/clock_rate/sample_rate/channels/extradata`
-（`tests/metadata_conformance.rs`）。但 wire 重建（RTMP FLV 序列化 → `flv_ingress`
-重建 `AVFrame`）丢失或改写：
-
-- `duration`/`duration_us`：未随 FLV 传输，重建后为 0。
-- `origin`：ingress 固定为 `FrameOrigin::Ingest`。
-- `side_data`：不整体保留，ingress 新建 `SourceTimestamp::Rtmp(...)`。
-- 音频 `flags`：ingress 恒置 `START_OF_AU | END_OF_AU`；视频非关键帧的
-  `DISCONTINUITY/CORRUPT/DROPPABLE/GENERATED` 等不保证保留。
-- `pts_us`/`dts_us`：由重建 timebase 重新计算，非独立透传。
-- track extradata 会被规范化（H.264 `avcc: None` → `Some(...)`；AAC ASC 规范化）。
-
-证据：`crates/foundation/cheetah-codec/src/flv_ingress.rs`（H.264/H.265/AAC 帧重建段）、
-`crates/sdk/cheetah-connector/src/push/rtmp.rs`。
-
-**为何影响。** STREAM-02（cheetah frame 元数据保真）要求 push/pull 全程保留上述字段，
-当前 wire 路径无法逐字段保真。
-
-**建议。** 在 FLV 映射/ingress 中携带并还原 duration、原始 flags、必要 side_data；对无法经
-FLV 表达的字段，在 connector 文档中明确列为“不保真”，并提供 conformance 契约说明。
-
-### R8：`SdkError → ConnectorError` 泛化映射把 `Unavailable` 硬编码为 RTMP
-
-**优先级：P2。**
-
-```rust
-// crates/sdk/cheetah-connector/src/error.rs
-SdkError::Unavailable(msg) => Self::Connect {
-    protocol: Protocol::Rtmp,
-    endpoint: msg.clone(),
-    ...
-}
-```
-
-`handles.rs` 的 `map_sdk_error()` 在句柄已知协议时会纠正，但直接的
-`From<SdkError>` 仍是 RTMP-specific。随 RTSP/WebRTC adapter 落地会误标协议。
-
-**建议。** 让泛化映射不臆测协议（用 `None`/上下文注入协议），或要求各 adapter 统一走
-带协议上下文的 `map_sdk_error()`。
-
-## 4. 建议的上游验收（对齐原文第 4 节）
-
-在 `crates/sdk/cheetah-connector` 内补齐后，`examples/external_connector_loopback.rs` 与
-`tests/` 应覆盖：
-
-1. `supports()` 与 `open_pull`/`open_push` 行为对四个方向逐一一致（关闭 R3）。
-2. RTSP pull：真实（或 fixture 分层标注的）streaming `recv`、取消、关闭、bounded queue、
-   reconnect（关闭 R1、R4）。
-3. WebRTC push：真实 `open_push` 产出 `PublisherSink`；signaling 与 media 分层验证，
-   SDP 生成不得替代 media round-trip（关闭 R2；对齐原文 Gap 4）。
-4. 提供并测试一个 socket-free 的 loopback 路径，或明确标注默认 loopback 走 localhost
-   （关闭 R6）。
-5. metadata conformance 对 `duration`、`origin`、`side_data`、精确 flags、`pts_us/dts_us`
-   逐字段断言，或在契约中显式声明不保真集合（关闭 R7）。
-6. `wait_ready()` 有真实就绪语义并被测试（关闭 R5）。
-
-## 5. `dyun-gu-dev` 侧可并行推进的部分
-
-- 现在即可：升级 `dg-stream-cheetah` 的 cheetah rev 至含 `cheetah-connector` 的提交，
-  基于 `EngineConnector` 实现可安装的 embedded `CheetahRuntimeConnector`，并以
-  `open_in_memory_loopback`（RTMP→HTTP-FLV）写本地 loopback 集成测试，完成 STREAM-01 的
-  loopback 主验收路径。
-- 待上游关闭 R1/R2 后：补齐 dg-stream 的 RTSP pull 与 WebRTC push 分支及对应测试，
-  完成 STREAM-01 全能力矩阵。
-- 待上游关闭 R7 后：推进 STREAM-02 的逐字段元数据保真。
+- **STREAM-01 已解锁。** 将 `crates/dg-stream-cheetah/Cargo.toml` 的 cheetah
+  rev 从 `182621c` bump 到包含 `cheetah-connector`、RTSP pull、WebRTC push
+  及 residual-gap 修复的上游提交；随后在 `dg-stream` 集成：
+  - RTSP pull；
+  - HTTP-FLV pull；
+  - RTMP push；
+  - WebRTC push；
+  - `LoopbackOptions.preferred_layer =
+    LoopbackLayer::EngineOnlyBypassWire` 的 socket-free local loopback test。
+- `supports()` 可作为四方向能力判定；`open_pull`/`open_push` 不再需要为
+  RTSP/WebRTC 增加临时 unsupported workaround。
+- **STREAM-02 仍待处理。** 继续针对 R7 的 duration、origin、side_data、
+  精确 flags、`pts_us`/`dts_us` 等字段决定扩展 wire metadata，或固化不保真
+  契约。
