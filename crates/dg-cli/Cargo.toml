@@ -20,6 +20,7 @@ sophon-soc = ["sophon", "dg-sophon/soc"]
 anyhow.workspace = true
 clap.workspace = true
 dg-elements = { path = "../dg-elements" }
+dg-core = { path = "../dg-core" }
 dg-graph = { path = "../dg-graph" }
 dg-media = { path = "../dg-media", optional = true }
 dg-stream = { path = "../dg-stream", optional = true }

@@ -1404,6 +1404,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dg-core",
  "dg-elements",
  "dg-graph",
  "dg-media",
