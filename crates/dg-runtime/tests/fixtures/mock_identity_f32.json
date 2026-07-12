@@ -1,0 +1,20 @@
+{
+  "name": "mock_identity_f32",
+  "inputs": [
+    {
+      "shape": [1, 4],
+      "values": [1.0, -2.5, 3.25, 4.0]
+    }
+  ],
+  "expected_outputs": [
+    {
+      "shape": [1, 4],
+      "values": [1.0, -2.5, 3.25, 4.0]
+    }
+  ],
+  "tolerance": {
+    "absolute": 0.000001,
+    "relative": 0.000001,
+    "cosine": 0.999999
+  }
+}

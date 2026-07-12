@@ -10,6 +10,7 @@ mod capabilities;
 mod error;
 mod mock;
 mod option;
+mod regression;
 mod runtime;
 mod tensor_info;
 
@@ -26,6 +27,10 @@ pub use mock::MockOptions;
 pub use option::{
     BackendConfig, BackendOptions, CoreSelection, ExternalStreamHandle, ModelFormat, ModelSource,
     OpenVINOOptions, RknnOptions, RuntimeOption, SophonOptions, TensorRtOptions,
+};
+pub use regression::{
+    RegressionCase, RegressionError, RegressionHarness, RegressionReport, RegressionTensor,
+    RegressionTolerance,
 };
 pub use runtime::{validate_runtime_option, InferPoll, Runtime};
 pub use tensor_info::TensorInfo;
