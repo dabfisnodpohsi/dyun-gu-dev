@@ -284,3 +284,62 @@ fn avcodec_jpeg_round_trip_through_media_elements() {
     assert_eq!(output.desc().shape().dims(), &[2, 2, 3]);
     assert_eq!(output.desc().dtype(), DataType::U8);
 }
+
+#[cfg(feature = "avcodec")]
+#[test]
+fn avcodec_native_free_h264_round_trip_through_cores() {
+    use dg_media::{
+        media_frame_to_graph_packet, AvcodecDecodeCore, AvcodecEncodeCore, MediaFrame,
+        MediaFrameKind, MediaPoll,
+    };
+
+    let width = 32usize;
+    let height = 32usize;
+    let rgb = vec![128u8; width * height * 3];
+    let mut input = MediaFrame::from_host_bytes(
+        MediaFrameKind::Image,
+        DataType::U8,
+        DataFormat::NHWC,
+        vec![height, width, 3],
+        DeviceKind::Cpu,
+        rgb,
+    )
+    .expect("construct RGB24 frame");
+    input.meta.pts = Some(7);
+    input.meta.dts = Some(7);
+
+    let mut encoder =
+        AvcodecEncodeCore::new(dg_media_avcodec::CodecId::H264).expect("create H264 encoder");
+    encoder.submit_image(input).expect("encode I420 frame");
+    let packet = match encoder.poll().expect("poll encoded packet") {
+        MediaPoll::Ready(packet) => packet,
+        other => panic!("expected encoded packet, got {other:?}"),
+    };
+    assert_eq!(packet.meta.pts, Some(7));
+    assert_eq!(packet.meta.dts, Some(7));
+
+    let mut decoder =
+        AvcodecDecodeCore::new(dg_media_avcodec::CodecId::H264).expect("create H264 decoder");
+    decoder.submit_packet(packet).expect("submit H264 packet");
+    decoder.submit_end_of_stream();
+
+    let mut decoded = None;
+    let mut reached_eos = false;
+    for _ in 0..100 {
+        match decoder.poll().expect("poll decoded frame") {
+            MediaPoll::Ready(frame) => decoded = Some(frame),
+            MediaPoll::Pending => continue,
+            MediaPoll::EndOfStream => {
+                reached_eos = true;
+                break;
+            }
+        }
+    }
+
+    let frame = decoded.expect("decoded H264 frame");
+    assert_eq!(frame.kind, MediaFrameKind::Image);
+    assert_eq!(frame.shape, vec![height, width, 3]);
+    assert_eq!(frame.format, DataFormat::NHWC);
+    assert!(reached_eos, "decoder must reach EOS after draining output");
+    media_frame_to_graph_packet(frame).expect("decoded H264 frame must convert to a tensor");
+}

@@ -59,14 +59,14 @@ const DECODE_PARAMS: &[ParamField] = &[
     #[cfg(feature = "avcodec")]
     ParamField {
         name: "codec",
-        ty: ParamType::Enum(&["jpeg", "mjpeg"]),
+        ty: ParamType::Enum(&["jpeg", "mjpeg", "h264"]),
         required: false,
     },
 ];
 #[cfg(feature = "avcodec")]
 const ENCODE_PARAMS: &[ParamField] = &[ParamField {
     name: "codec",
-    ty: ParamType::Enum(&["jpeg", "mjpeg"]),
+    ty: ParamType::Enum(&["jpeg", "mjpeg", "h264"]),
     required: false,
 }];
 #[cfg(not(feature = "avcodec"))]

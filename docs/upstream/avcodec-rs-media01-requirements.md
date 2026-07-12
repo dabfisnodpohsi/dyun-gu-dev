@@ -203,8 +203,12 @@ parameter set 时兼容）；round-trip 测试断言 PTS/DTS/time_base/KEY flag 
   **decode + encode** 闭环（host I420 ↔ H.264 Annex-B），并保留 KEY flag/PTS/DTS/packet time_base 与
   in-band SPS/PPS。因此 MEDIA-01「用 `RegistryBuilder` 驱动 Decoder/Encoder/ImageProcessor + 真实码流」
   现可在无硬件/无 native SDK 的 CI 中落地。
-- 建议的实现方向（后续独立 PR）：在 `dg-media-avcodec` 注册 `avcodec-backend-rust-h264`（走
-  `native-free-software` 白名单）、在 `dg-media` 的 `codec_from_name`/`DecodeCore`/`EncodeCore` 支持
-  `h264`（bitstream 用 `H264AnnexB`），并加一个 native-free 的 H.264 encode→decode 集成测试。
+- **已落地（本轮实现）：** `dg-media-avcodec` 改为经上游公开 SDK facade（package `avcodec`，
+  `default-features=false, features=["native-free-software"]`）依赖，不再直接 pin 内部
+  `avcodec-core-model`/`backend-jpeg`/`backend-zune`；`registry()` 用 `native_free_software_registry_builder()`；
+  `dg-media` 的 `codec_from_name`/`DecodeCore`/`EncodeCore` 支持 `h264`（bitstream 按 codec 选
+  `H264AnnexB`/`JpegInterchange`，bridge 以与 JPEG 一致的 interleaved RGB24 `[h,w,3]` 作为
+  H.264 MediaFrame 边界，并通过纯 Rust BT.601 scalar CSC 转换至/自 host I420），并加了 native-free
+  的 H.264 encode→decode 集成测试。
 - 剩余非阻塞项：native-free VP8/VP9/AV1 覆盖（Req B，上游明确不在 native-free 范围）与统一
   `PacketMetadata` trait（Req C 的可选收敛）。

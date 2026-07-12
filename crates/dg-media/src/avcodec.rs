@@ -2,30 +2,36 @@ use dg_core::{Error, Result};
 
 use crate::bridge::{
     avcodec_image_to_media_frame, avcodec_packet_to_media_frame, media_frame_to_avcodec_image,
-    media_frame_to_avcodec_packet,
+    media_frame_to_avcodec_image_for_codec, media_frame_to_avcodec_packet,
 };
 use crate::MediaFrame;
 
 use dg_media_avcodec::{
     AvError, AvErrorContext, AvErrorKind, BitstreamFormat, CodecId, Decoder, DecoderConfig,
     Encoder, EncoderConfig, ImageOp, ImageProcessRequest, ImageProcessor, ImageProcessorConfig,
-    MemoryDomain, Poll, Registry, RegistryBuilder, TimeBase, JPEG_BACKEND, ZUNE_BACKEND,
+    MemoryDomain, Poll, Registry, TimeBase,
 };
 
 pub fn registry() -> Registry {
-    RegistryBuilder::new()
-        .with_backend(&JPEG_BACKEND)
-        .with_backend(&ZUNE_BACKEND)
-        .build()
+    dg_media_avcodec::native_free_software_registry_builder().build()
 }
 
 pub fn codec_from_name(name: Option<&str>) -> Result<CodecId> {
     match name.unwrap_or("jpeg").to_ascii_lowercase().as_str() {
         "jpeg" => Ok(CodecId::Jpeg),
         "mjpeg" => Ok(CodecId::Mjpeg),
+        "h264" => Ok(CodecId::H264),
         other => Err(Error::Config(format!(
-            "codec must be one of `jpeg` or `mjpeg`, got `{other}`"
+            "codec must be one of `jpeg`, `mjpeg`, or `h264`, got `{other}`"
         ))),
+    }
+}
+
+fn bitstream_format(codec: CodecId) -> BitstreamFormat {
+    match codec {
+        CodecId::H264 => BitstreamFormat::H264AnnexB,
+        CodecId::Jpeg | CodecId::Mjpeg => BitstreamFormat::JpegInterchange,
+        _ => BitstreamFormat::JpegInterchange,
     }
 }
 
@@ -131,7 +137,7 @@ impl DecodeCore {
             ));
         }
         let packet =
-            media_frame_to_avcodec_packet(frame, 0, self.codec, BitstreamFormat::JpegInterchange)?;
+            media_frame_to_avcodec_packet(frame, 0, self.codec, bitstream_format(self.codec))?;
         match self.decoder.submit_packet(packet) {
             Ok(()) => Ok(()),
             Err(error) if is_again(&error) || is_end_of_stream(&error) => Ok(()),
@@ -188,7 +194,7 @@ impl EncodeCore {
                 "media_encode: frame submitted after end of stream".to_string(),
             ));
         }
-        let image = media_frame_to_avcodec_image(frame, 1)?;
+        let image = media_frame_to_avcodec_image_for_codec(frame, 1, self.codec)?;
         if self.encoder.is_none() {
             let config = EncoderConfig::new(
                 self.codec,

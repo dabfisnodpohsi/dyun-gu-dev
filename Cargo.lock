@@ -107,6 +107,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "avcodec"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-backend-jpeg",
+ "avcodec-backend-rust-h264",
+ "avcodec-backend-zune",
+ "avcodec-core-model",
+ "avcodec-core-pipeline",
+ "avcodec-core-plugin-api",
+ "avcodec-runtime-native",
+ "avcodec-runtime-web",
+]
+
+[[package]]
 name = "avcodec-backend-jpeg"
 version = "0.1.0"
 source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
@@ -114,6 +129,16 @@ dependencies = [
  "avcodec-core-model",
  "jpeg-decoder",
  "jpeg-encoder",
+]
+
+[[package]]
+name = "avcodec-backend-rust-h264"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-core-model",
+ "rust_h264",
+ "rusty_h264",
 ]
 
 [[package]]
@@ -137,6 +162,40 @@ source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8e
 dependencies = [
  "smallvec",
  "spin",
+]
+
+[[package]]
+name = "avcodec-core-pipeline"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-core-model",
+]
+
+[[package]]
+name = "avcodec-core-plugin-api"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-core-model",
+]
+
+[[package]]
+name = "avcodec-runtime-native"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-core-model",
+ "avcodec-core-pipeline",
+]
+
+[[package]]
+name = "avcodec-runtime-web"
+version = "0.1.0"
+source = "git+https://github.com/TimothyWalker6922/avcodec-rs-develop.git?rev=8ef5a72a50b396bad1a670fc2757893c059191a4#8ef5a72a50b396bad1a670fc2757893c059191a4"
+dependencies = [
+ "avcodec-core-model",
+ "avcodec-core-pipeline",
 ]
 
 [[package]]
@@ -182,6 +241,12 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6aedf8ae72766347502cf3cb4f41cf5e9cc37d28bee90f1fdaaae15f9cf9424"
 
 [[package]]
 name = "byteorder"
@@ -579,9 +644,7 @@ dependencies = [
 name = "dg-media-avcodec"
 version = "0.1.0"
 dependencies = [
- "avcodec-backend-jpeg",
- "avcodec-backend-zune",
- "avcodec-core-model",
+ "avcodec",
 ]
 
 [[package]]
@@ -1387,6 +1450,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rust_h264"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1412,10 +1481,58 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty_h264"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "363e230d4077795bce5d9220fbc57adfd992f7b88cb51da61fcc821db94cb11f"
+dependencies = [
+ "rusty_h264-common",
+ "rusty_h264-decoder",
+ "rusty_h264-encoder",
+]
+
+[[package]]
+name = "rusty_h264-common"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55b68927b9fef8e7193b3d646e3a6a53ff48f00e1b3b2c9d0356d1fcf0317a0"
+dependencies = [
+ "bytemuck",
+ "wide",
+]
+
+[[package]]
+name = "rusty_h264-decoder"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7452c4bdc27d418d17ac7a08e026df05c95b76342aa31a637b270e6e776c0b7"
+dependencies = [
+ "rusty_h264-common",
+]
+
+[[package]]
+name = "rusty_h264-encoder"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30fd45781286cbfb8680a653482610476f91fb51c0565fd1a8637b6d29b5c41f"
+dependencies = [
+ "rusty_h264-common",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -1904,6 +2021,16 @@ checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]
