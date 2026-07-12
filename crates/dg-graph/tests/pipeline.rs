@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use dg_core::{CpuDevice, DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc};
-use dg_graph::{Graph, GraphDiff, GraphSpecBuilder, NodeSpec};
+use dg_graph::{ExecutionSpec, Graph, GraphDiff, GraphSpecBuilder, NodeSpec, ParallelType};
 use serde_json::json;
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
@@ -305,4 +305,77 @@ fn running_graph_replaces_only_affected_worker_and_rejects_invalid_diff_atomical
     assert!(outputs
         .iter()
         .any(|tensor| { tensor.buffer().read_bytes().iter().all(|byte| *byte == 7) }));
+}
+
+#[test]
+fn hot_update_keeps_unaffected_branch_lossless_under_backpressure() {
+    let count = 2_048;
+    let execution = ExecutionSpec {
+        parallel: ParallelType::Pipeline,
+        queue_capacity: 1,
+        workers: None,
+    };
+    for iteration in 0..16 {
+        let spec = GraphSpecBuilder::new()
+            .execution(execution.clone())
+            .add_node(NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                params: json!({"count": count, "shape": [1, 4], "start": 1.0}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "affected".to_string(),
+                kind: "mock_inference".to_string(),
+                params: json!({"shape": [1, 4], "echo_inputs": true}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "unaffected".to_string(),
+                kind: "sink".to_string(),
+                params: json!({}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "affected_sink".to_string(),
+                kind: "sink".to_string(),
+                params: json!({}),
+                ..NodeSpec::default()
+            })
+            .connect("source.out -> affected.in")
+            .connect("source.out -> unaffected.in")
+            .connect("affected.out -> affected_sink.in")
+            .build()
+            .expect("build hot-update stress graph");
+        let graph = Graph::new(spec).expect("construct hot-update stress graph");
+        let mut running = graph.start(HashMap::new()).expect("start stress graph");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        running
+            .apply_hot_update(GraphDiff {
+                updated_nodes: vec![NodeSpec {
+                    name: "affected".to_string(),
+                    kind: "mock_inference".to_string(),
+                    params: json!({
+                        "shape": [1, 4],
+                        "echo_inputs": false,
+                        "fill_value": 7
+                    }),
+                    ..NodeSpec::default()
+                }],
+                ..GraphDiff::default()
+            })
+            .unwrap_or_else(|error| panic!("iteration {iteration} hot update failed: {error}"));
+        let report = running
+            .finish()
+            .unwrap_or_else(|error| panic!("iteration {iteration} did not finish: {error}"));
+        let outputs = report
+            .sinks
+            .get("unaffected")
+            .expect("unaffected sink outputs");
+        assert_eq!(
+            outputs.len(),
+            count,
+            "iteration {iteration} lost packets on unaffected branch"
+        );
+    }
 }

@@ -496,7 +496,11 @@ impl RunningGraph {
                 };
                 let (sender, receiver) = pipe.split();
                 if let Some(old_route) = old_route {
-                    drain_routes.push((old_route.receiver, sender.clone()));
+                    drain_routes.push((
+                        old_route.receiver,
+                        sender.clone(),
+                        !affected.contains_key(&parsed.from_node),
+                    ));
                 }
                 EdgeRoute {
                     sender,
@@ -507,7 +511,7 @@ impl RunningGraph {
         }
 
         let mut next_inputs = BTreeMap::new();
-        let mut next_outputs = BTreeMap::new();
+        let mut output_senders = BTreeMap::<(String, String), Vec<PipeSender>>::new();
         for connection in &candidate.connections {
             let parsed = ConnectionSpec::parse(connection)?;
             let route = next_edges.get(connection).ok_or_else(|| {
@@ -518,32 +522,23 @@ impl RunningGraph {
                 route.receiver.clone(),
             );
             let output_key = (parsed.from_node.clone(), parsed.from_port.clone());
-            next_outputs.entry(output_key.clone()).or_insert_with(|| {
-                self.routes
-                    .outputs
-                    .get(&output_key)
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())))
-            });
-        }
-        for route in self.routes.outputs.values() {
-            route
-                .lock()
-                .map_err(|_| Error::Runtime("output route lock poisoned".to_string()))?
-                .clear();
-        }
-        for connection in &candidate.connections {
-            let parsed = ConnectionSpec::parse(connection)?;
-            let route = next_edges.get(connection).ok_or_else(|| {
-                Error::Runtime(format!("missing route for connection {connection}"))
-            })?;
-            let output = next_outputs
-                .get(&(parsed.from_node, parsed.from_port))
-                .ok_or_else(|| Error::Runtime("missing output route".to_string()))?;
-            output
-                .lock()
-                .map_err(|_| Error::Runtime("output route lock poisoned".to_string()))?
+            output_senders
+                .entry(output_key)
+                .or_default()
                 .push(route.sender.clone());
+        }
+        let mut next_outputs = BTreeMap::new();
+        for (output_key, senders) in output_senders {
+            let route = self
+                .routes
+                .outputs
+                .get(&output_key)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
+            *route
+                .lock()
+                .map_err(|_| Error::Runtime("output route lock poisoned".to_string()))? = senders;
+            next_outputs.insert(output_key, route);
         }
 
         self.routes.edges = next_edges;
@@ -617,17 +612,29 @@ impl RunningGraph {
                 },
             );
         }
-        for (old_receiver, sender) in drain_routes {
+        for (old_receiver, sender, upstream_stays_live) in drain_routes {
             loop {
                 let packet = {
                     let receiver = old_receiver
                         .lock()
                         .map_err(|_| Error::Runtime("drain route lock poisoned".to_string()))?;
-                    receiver.try_recv()
+                    if upstream_stays_live {
+                        receiver.recv_timeout(Duration::from_millis(1))
+                    } else {
+                        receiver.try_recv().map_err(|error| match error {
+                            std::sync::mpsc::TryRecvError::Empty => {
+                                std::sync::mpsc::RecvTimeoutError::Timeout
+                            }
+                            std::sync::mpsc::TryRecvError::Disconnected => {
+                                std::sync::mpsc::RecvTimeoutError::Disconnected
+                            }
+                        })
+                    }
                 };
                 match packet {
                     Ok(packet) => {
                         let mut pending = packet;
+                        let is_eos = pending.is_eos();
                         loop {
                             match sender.try_send(pending) {
                                 Ok(()) => break,
@@ -646,9 +653,19 @@ impl RunningGraph {
                                 }
                             }
                         }
+                        if is_eos {
+                            break;
+                        }
                     }
-                    Err(std::sync::mpsc::TryRecvError::Empty)
-                    | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !upstream_stays_live => {
+                        break;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(Error::NotRunning);
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         }

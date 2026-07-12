@@ -134,7 +134,8 @@ impl ElementIo {
         })?;
         let senders = senders
             .lock()
-            .map_err(|_| Error::Runtime(format!("send lock poisoned on {port}")))?;
+            .map_err(|_| Error::Runtime(format!("send lock poisoned on {port}")))?
+            .clone();
         let is_eos = packet.is_eos();
         let is_source = self.inputs.is_empty();
         for sender in senders.iter() {
