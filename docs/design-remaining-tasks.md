@@ -56,7 +56,7 @@
 | SYS-02 | 已完成 | `dg-rknn-sys` 分层 | bindgen/build/link/unsafe 移入 `dg-rknn-sys`；安全 crate 仅 RAII 与 `InferBackend` | 无 |
 | SYS-03 | 已完成 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
 | SYS-04 | 已完成 | `dg-sophon-sys` 分层 | BMRuntime/bmlib bindings、link 和 raw calls 移入 `dg-sophon-sys` | 无 |
-| BE-01 | 未开始 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
+| BE-01 | 已完成 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
 | RT-01 | 已完成 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
 | RT-02 | 已完成 | 运行期 SDK/设备能力探测 | 各后端 init 查询 SDK 版本、设备、精度和部署能力；静态表仅为无硬件 fallback；不支持时给出明确诊断且不静默降级 | SYS-01 至 SYS-04 |
 | SCH-01 | 已完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
@@ -81,6 +81,10 @@
 > `dg-tensorrt-sys`；`dg-tensorrt` 保留 RAII、错误转换、`InferBackend`
 > 安全适配和 SDK-free 的 `mock_sys` 测试路径。默认构建不启用 backend，
 > 因此仍不需要 CUDA 或 TensorRT SDK。
+
+> BE-01 说明：RKNN 与 Sophon 的真实 `InferBackend` 适配器现在分别以
+> SDK-free 的 `mock_sys` FFI shim 编译并测试；shim 仅替代厂商符号，RAII、
+> 错误转换、reshape 和 run 仍走真实 adapter。默认无硬件测试不需要厂商 SDK。
 
 > CORE-01 说明：`dg-core` 通过 inventory 注册 Device/Stream/Event adapter，
 > 并提供 CPU 参考实现的 `MemoryPool`/`Allocator`；默认构建保持 SDK-free，
