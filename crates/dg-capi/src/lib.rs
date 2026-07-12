@@ -909,7 +909,6 @@ pub unsafe extern "C" fn dg_tensor_create_external(
             domain_from_c(domain),
             BufferDesc::new(size_bytes, 1),
             external,
-            vec![0; size_bytes],
             ExternalDropGuard::new(|| {}),
         )
         .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
@@ -950,7 +949,12 @@ pub unsafe extern "C" fn dg_tensor_data(
             ));
         }
         let tensor = unsafe { &*tensor };
-        let snapshot = tensor.tensor.buffer().read_bytes().into_boxed_slice();
+        let snapshot = tensor
+            .tensor
+            .buffer()
+            .try_read_bytes()
+            .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?
+            .into_boxed_slice();
         let length = snapshot.len();
         LAST_DATA.with(|last| *last.borrow_mut() = Some(snapshot));
         let data = LAST_DATA.with(|last| {
@@ -1059,7 +1063,6 @@ pub unsafe extern "C" fn dg_buffer_import_external(
             domain_from_c(domain),
             BufferDesc::new(size_bytes, 1),
             external,
-            vec![0; size_bytes],
             ExternalDropGuard::new(|| {}),
         )
         .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;

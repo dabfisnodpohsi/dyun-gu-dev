@@ -73,6 +73,91 @@ fn buffer_refcount_and_copy_semantics() {
 }
 
 #[test]
+fn external_only_buffer_requires_explicit_mapping() {
+    let buffer = dg_core::Buffer::from_external(
+        DeviceKind::Cpu,
+        dg_core::MemoryDomain::DmaBuf,
+        BufferDesc::new(4, 1),
+        dg_core::ExternalHandle::from_fd(12),
+        dg_core::ExternalDropGuard::new(|| {}),
+    )
+    .expect("import external-only buffer");
+
+    assert_eq!(buffer.len(), 4);
+    assert_eq!(buffer.external().fd, Some(12));
+    assert_eq!(buffer.domain(), dg_core::MemoryDomain::DmaBuf);
+    assert!(matches!(
+        buffer.map(),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+    assert!(matches!(
+        buffer.write_from_slice(&[1, 2, 3, 4]),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+
+    let staged = buffer
+        .map_with(|external, domain, size| {
+            assert_eq!(external.fd, Some(12));
+            assert_eq!(domain, dg_core::MemoryDomain::DmaBuf);
+            Ok(vec![9; size])
+        })
+        .expect("map external buffer");
+    assert_eq!(staged, vec![9, 9, 9, 9]);
+}
+
+#[test]
+fn external_only_buffer_copy_operations_return_errors() {
+    let device = CpuDevice::new();
+    let buffer = dg_core::Buffer::from_external(
+        DeviceKind::Cpu,
+        dg_core::MemoryDomain::DmaBuf,
+        BufferDesc::new(4, 1),
+        dg_core::ExternalHandle::from_fd(21),
+        dg_core::ExternalDropGuard::new(|| {}),
+    )
+    .expect("import external-only buffer");
+    let mut bytes = [0; 4];
+    assert!(matches!(
+        device.memcpy_d2h(&buffer, &mut bytes),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+
+    let destination = device
+        .alloc(BufferDesc::new(4, 1))
+        .expect("allocate destination");
+    assert!(matches!(
+        buffer.copy_to(&destination),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+}
+
+#[test]
+fn external_only_buffer_releases_guard_once_after_last_clone() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    let released = Arc::new(AtomicUsize::new(0));
+    let flag = released.clone();
+    let buffer = dg_core::Buffer::from_external(
+        DeviceKind::Cpu,
+        dg_core::MemoryDomain::CudaDevice,
+        BufferDesc::new(8, 1),
+        dg_core::ExternalHandle::from_raw(99),
+        dg_core::ExternalDropGuard::new(move || {
+            flag.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+    .expect("import external-only buffer");
+    let clone = buffer.clone();
+    drop(buffer);
+    assert_eq!(released.load(Ordering::SeqCst), 0);
+    drop(clone);
+    assert_eq!(released.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn datatype_round_trip_and_sizes() {
     assert_eq!(DataType::of::<f32>(), DataType::F32);
     assert_eq!(DataType::of::<half::f16>(), DataType::F16);
