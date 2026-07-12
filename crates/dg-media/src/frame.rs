@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::stream_metadata::MediaStreamMetadata;
 use dg_core::{
     Buffer, BufferDesc, DataFormat, DataType, DeviceKind, MemoryDomain, Result, Shape, Tensor,
     TensorDesc,
@@ -20,6 +21,7 @@ pub struct MediaFrameMeta {
     pub dts: Option<i64>,
     pub stream_id: Option<String>,
     pub tags: BTreeMap<String, String>,
+    pub stream_metadata: Option<MediaStreamMetadata>,
 }
 
 /// Framework-native media frame envelope.

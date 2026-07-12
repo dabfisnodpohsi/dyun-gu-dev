@@ -13,6 +13,7 @@ mod frame;
 mod mock;
 mod ops;
 mod planner;
+mod stream_metadata;
 
 #[cfg(feature = "avcodec")]
 pub use avcodec::{DecodeCore as AvcodecDecodeCore, EncodeCore as AvcodecEncodeCore, HwPreference};
@@ -21,6 +22,9 @@ pub use mock::{MockMediaSink, MockMediaSource};
 pub use ops::{DecodeCore, EncodeCore, MediaPoll, OsdBox, OsdCore, ResizeCore};
 pub use planner::{
     preferred_memory_domain, CopyPath, ZeroCopyPlan, ZeroCopyPlanner, ZeroCopyRequest,
+};
+pub use stream_metadata::{
+    MediaStreamCodec, MediaStreamFormat, MediaStreamKind, MediaStreamMetadata, MediaStreamTimebase,
 };
 
 pub use dg_core::{

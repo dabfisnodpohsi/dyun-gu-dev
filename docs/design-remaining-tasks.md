@@ -72,7 +72,7 @@
 | APP-01 | 已完成 | CLI/C API 链接 media/stream registry | feature-gated 链接 `dg-media`/`dg-stream`；`list-elements` 和配置加载能发现八个 element；默认 build 仍无外部 SDK | CFG-02、CFG-03 |
 | MEDIA-01 | 已完成 | avcodec-rs 真实 adapter | `avcodec` feature 通过 RegistryBuilder 驱动 Decoder/Encoder/ImageProcessor；x86 software codec 测试覆盖真实码流；AvError 映射完整 | APP-01 |
 | STREAM-01 | 已完成 | cheetah 真实 connector | 提供可安装的 embedded `CheetahRuntimeConnector`，实现 RTSP/HTTP-FLV pull 和 RTMP/WebRTC push；本地 loopback 集成测试通过 | APP-01 |
-| STREAM-02 | 未开始 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
+| STREAM-02 | 进行中 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
 | MEDIA-02 | 未开始 | frame bridge 与 planner 接入真实数据路径 | avcodec Image/Packet、cheetah AVFrame、dg-core Buffer/Tensor 共享兼容句柄；staging fallback 显式记录域、路径、copy count | MEDIA-01、STREAM-02、MEM-01 |
 | ELEM-01 | 未开始 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
 | ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
@@ -90,6 +90,11 @@
 > 的 Cargo 构建依赖）转换为 `Rgb24`，再进入下游 `MediaFrame`。若运行时没有可用 CSC
 > processor，则显式返回错误，不静默降级。详见
 > [docs/upstream/avcodec-rs-media01-requirements.md §0](upstream/avcodec-rs-media01-requirements.md)。
+
+> STREAM-02 说明：cheetah 每帧的 track id、媒体类型、codec、格式、timebase、
+> PTS/DTS 与关键帧标志存放在 `dg-media` 的帧元数据中；push 侧优先使用帧元数据，
+> 缺失时按帧的 track id 查询已公告的 TrackInfo 缓存，并在无法解析时显式报错，
+> 不写入 `Unknown`/`Data` 作为静默回退。
 
 ## D. 可观测性、测试与交付
 

@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 #[cfg(feature = "cheetah")]
 use bytes::Bytes;
+#[cfg(feature = "cheetah")]
+use std::collections::HashMap;
+#[cfg(feature = "cheetah")]
+use std::sync::Mutex;
 
 #[cfg(feature = "cheetah")]
 use crate::error::{Error, Result};
@@ -16,8 +20,10 @@ use crate::track::{
 };
 use dg_media::MediaFrame;
 #[cfg(feature = "cheetah")]
-use dg_media::MediaFrameKind;
-
+use dg_media::{
+    MediaFrameKind, MediaStreamCodec, MediaStreamFormat, MediaStreamKind, MediaStreamMetadata,
+    MediaStreamTimebase,
+};
 pub fn media_frame_to_frame(frame: MediaFrame) -> Arc<MediaFrame> {
     Arc::new(frame)
 }
@@ -109,66 +115,127 @@ pub fn cheetah_avframe_to_media_frame(frame: Arc<dg_stream_cheetah::AVFrame>) ->
     media_frame.meta.pts = Some(frame.pts);
     media_frame.meta.dts = Some(frame.dts);
     media_frame.meta.stream_id = Some(u64::from(frame.track_id.0).to_string());
+    media_frame.meta.stream_metadata = Some(cheetah_frame_metadata(frame));
     media_frame
 }
 
 #[cfg(feature = "cheetah")]
 pub fn media_frame_to_cheetah_avframe(
     frame: Arc<MediaFrame>,
-    track_id: u64,
-    media_kind: dg_stream_cheetah::MediaKind,
-    codec: dg_stream_cheetah::CodecId,
-    format: dg_stream_cheetah::FrameFormat,
-) -> dg_stream_cheetah::AVFrame {
+    metadata: MediaStreamMetadata,
+) -> Result<dg_stream_cheetah::AVFrame> {
     let frame = match Arc::try_unwrap(frame) {
         Ok(frame) => frame,
         Err(frame) => frame.as_ref().clone(),
     };
     let payload = Bytes::from(frame.buffer.into_host_bytes());
-    dg_stream_cheetah::AVFrame::new(
-        dg_stream_cheetah::TrackId(u32::try_from(track_id).unwrap_or(u32::MAX)),
-        media_kind,
-        codec,
-        format,
+    let track_id = u32::try_from(metadata.track_id).map_err(|_| {
+        Error::InvalidArgument(format!(
+            "stream metadata track id {} exceeds cheetah TrackId range",
+            metadata.track_id
+        ))
+    })?;
+    let mut avframe = dg_stream_cheetah::AVFrame::new(
+        dg_stream_cheetah::TrackId(track_id),
+        media_kind_to_cheetah(metadata.media_kind),
+        codec_to_cheetah(metadata.codec),
+        format_to_cheetah(metadata.format),
         frame.meta.pts.unwrap_or_default(),
         frame.meta.dts.unwrap_or_default(),
-        dg_stream_cheetah::Timebase::new(1, 1),
+        dg_stream_cheetah::Timebase::new(metadata.timebase.num, metadata.timebase.den),
         payload,
-    )
+    );
+    if metadata.keyframe {
+        avframe.flags.insert(dg_stream_cheetah::FrameFlags::KEY);
+    }
+    Ok(avframe)
 }
 
 #[cfg(feature = "cheetah")]
 pub struct CheetahPublisherSinkAdapter {
     inner: Box<dyn dg_stream_cheetah::PublisherSink>,
+    tracks: Mutex<HashMap<u64, TrackInfo>>,
 }
 
 #[cfg(feature = "cheetah")]
 impl CheetahPublisherSinkAdapter {
     pub fn new(inner: Box<dyn dg_stream_cheetah::PublisherSink>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            tracks: Mutex::new(HashMap::new()),
+        }
     }
 }
 
 #[cfg(feature = "cheetah")]
 impl PublisherSink for CheetahPublisherSinkAdapter {
     fn update_tracks(&self, tracks: Vec<TrackInfo>) -> Result<()> {
-        let tracks = tracks
-            .into_iter()
-            .map(|track| media_frame_to_cheetah_track_info(&track))
+        let cheetah_tracks = tracks
+            .iter()
+            .map(media_frame_to_cheetah_track_info)
             .collect();
         self.inner
-            .update_tracks(tracks)
-            .map_err(|err| Error::Sdk(err.to_string()))
+            .update_tracks(cheetah_tracks)
+            .map_err(|err| Error::Sdk(err.to_string()))?;
+        let mut cached = self
+            .tracks
+            .lock()
+            .map_err(|_| Error::Runtime("cheetah track cache lock poisoned".to_string()))?;
+        cached.clear();
+        for track in tracks {
+            cached.insert(track.track_id, track);
+        }
+        Ok(())
     }
 
     fn push_frame(&self, frame: Arc<MediaFrame>) -> Result<DispatchResult> {
-        let avframe = media_frame_to_cheetah_avframe(
-            frame,
-            0,
-            dg_stream_cheetah::MediaKind::Data,
-            dg_stream_cheetah::CodecId::Unknown,
-            dg_stream_cheetah::FrameFormat::Unknown,
-        );
+        let metadata = match frame.meta.stream_metadata {
+            Some(metadata) => metadata,
+            None => {
+                let track_id = frame
+                    .meta
+                    .stream_id
+                    .as_deref()
+                    .ok_or_else(|| {
+                        Error::InvalidArgument(
+                            "stream frame has no metadata or stream_id track id".to_string(),
+                        )
+                    })?
+                    .parse::<u64>()
+                    .map_err(|_| {
+                        Error::InvalidArgument(
+                            "stream frame stream_id is not a valid track id".to_string(),
+                        )
+                    })?;
+                let cached = self
+                    .tracks
+                    .lock()
+                    .map_err(|_| Error::Runtime("cheetah track cache lock poisoned".to_string()))?;
+                let track = cached.get(&track_id).ok_or_else(|| {
+                    Error::InvalidArgument(format!(
+                        "no announced cheetah track metadata for track id {track_id}"
+                    ))
+                })?;
+                if track.clock_rate == 0 {
+                    return Err(Error::InvalidArgument(format!(
+                        "announced cheetah track {track_id} has an invalid zero clock rate"
+                    )));
+                }
+                MediaStreamMetadata {
+                    track_id,
+                    media_kind: media_kind_to_stream(track.media_kind),
+                    codec: codec_to_stream(track.codec),
+                    format: canonical_format(track.codec),
+                    timebase: MediaStreamTimebase::new(1, track.clock_rate),
+                    keyframe: frame
+                        .meta
+                        .tags
+                        .get(crate::hub::KEYFRAME_TAG)
+                        .is_some_and(|value| value == "true"),
+                }
+            }
+        };
+        let avframe = media_frame_to_cheetah_avframe(frame, metadata)?;
         self.inner
             .push_frame(Arc::new(avframe))
             .map(Into::into)
@@ -183,6 +250,167 @@ impl PublisherSink for CheetahPublisherSinkAdapter {
 
     fn take_keyframe_requests(&self) -> u64 {
         self.inner.take_keyframe_requests()
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn cheetah_frame_metadata(frame: &dg_stream_cheetah::AVFrame) -> MediaStreamMetadata {
+    MediaStreamMetadata {
+        track_id: u64::from(frame.track_id.0),
+        media_kind: media_kind_from_cheetah(frame.media_kind),
+        codec: codec_from_cheetah(frame.codec),
+        format: format_from_cheetah(frame.format),
+        timebase: MediaStreamTimebase::new(frame.timebase.num, frame.timebase.den),
+        keyframe: frame.is_key_frame(),
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn media_kind_from_cheetah(value: dg_stream_cheetah::MediaKind) -> MediaStreamKind {
+    match value {
+        dg_stream_cheetah::MediaKind::Video => MediaStreamKind::Video,
+        dg_stream_cheetah::MediaKind::Audio => MediaStreamKind::Audio,
+        dg_stream_cheetah::MediaKind::Data => MediaStreamKind::Data,
+        dg_stream_cheetah::MediaKind::Subtitle => MediaStreamKind::Subtitle,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn media_kind_to_stream(value: MediaKind) -> MediaStreamKind {
+    match value {
+        MediaKind::Video => MediaStreamKind::Video,
+        MediaKind::Audio => MediaStreamKind::Audio,
+        MediaKind::Data => MediaStreamKind::Data,
+        MediaKind::Subtitle => MediaStreamKind::Subtitle,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn media_kind_to_cheetah(value: MediaStreamKind) -> dg_stream_cheetah::MediaKind {
+    match value {
+        MediaStreamKind::Video => dg_stream_cheetah::MediaKind::Video,
+        MediaStreamKind::Audio => dg_stream_cheetah::MediaKind::Audio,
+        MediaStreamKind::Data => dg_stream_cheetah::MediaKind::Data,
+        MediaStreamKind::Subtitle => dg_stream_cheetah::MediaKind::Subtitle,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn codec_from_cheetah(value: dg_stream_cheetah::CodecId) -> MediaStreamCodec {
+    match value {
+        dg_stream_cheetah::CodecId::H264 => MediaStreamCodec::H264,
+        dg_stream_cheetah::CodecId::H265 => MediaStreamCodec::H265,
+        dg_stream_cheetah::CodecId::H266 => MediaStreamCodec::H266,
+        dg_stream_cheetah::CodecId::AV1 => MediaStreamCodec::AV1,
+        dg_stream_cheetah::CodecId::VP8 => MediaStreamCodec::VP8,
+        dg_stream_cheetah::CodecId::VP9 => MediaStreamCodec::VP9,
+        dg_stream_cheetah::CodecId::MJPEG => MediaStreamCodec::MJPEG,
+        dg_stream_cheetah::CodecId::AAC => MediaStreamCodec::AAC,
+        dg_stream_cheetah::CodecId::ADPCM => MediaStreamCodec::ADPCM,
+        dg_stream_cheetah::CodecId::Opus => MediaStreamCodec::Opus,
+        dg_stream_cheetah::CodecId::G711A => MediaStreamCodec::G711A,
+        dg_stream_cheetah::CodecId::G711U => MediaStreamCodec::G711U,
+        dg_stream_cheetah::CodecId::MP2 => MediaStreamCodec::MP2,
+        dg_stream_cheetah::CodecId::MP3 => MediaStreamCodec::MP3,
+        dg_stream_cheetah::CodecId::Unknown => MediaStreamCodec::Unknown,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn codec_to_stream(value: CodecId) -> MediaStreamCodec {
+    match value {
+        CodecId::H264 => MediaStreamCodec::H264,
+        CodecId::H265 => MediaStreamCodec::H265,
+        CodecId::H266 => MediaStreamCodec::H266,
+        CodecId::AV1 => MediaStreamCodec::AV1,
+        CodecId::VP8 => MediaStreamCodec::VP8,
+        CodecId::VP9 => MediaStreamCodec::VP9,
+        CodecId::MJPEG => MediaStreamCodec::MJPEG,
+        CodecId::AAC => MediaStreamCodec::AAC,
+        CodecId::ADPCM => MediaStreamCodec::ADPCM,
+        CodecId::Opus => MediaStreamCodec::Opus,
+        CodecId::G711A => MediaStreamCodec::G711A,
+        CodecId::G711U => MediaStreamCodec::G711U,
+        CodecId::MP2 => MediaStreamCodec::MP2,
+        CodecId::MP3 => MediaStreamCodec::MP3,
+        CodecId::Unknown => MediaStreamCodec::Unknown,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn codec_to_cheetah(value: MediaStreamCodec) -> dg_stream_cheetah::CodecId {
+    match value {
+        MediaStreamCodec::H264 => dg_stream_cheetah::CodecId::H264,
+        MediaStreamCodec::H265 => dg_stream_cheetah::CodecId::H265,
+        MediaStreamCodec::H266 => dg_stream_cheetah::CodecId::H266,
+        MediaStreamCodec::AV1 => dg_stream_cheetah::CodecId::AV1,
+        MediaStreamCodec::VP8 => dg_stream_cheetah::CodecId::VP8,
+        MediaStreamCodec::VP9 => dg_stream_cheetah::CodecId::VP9,
+        MediaStreamCodec::MJPEG => dg_stream_cheetah::CodecId::MJPEG,
+        MediaStreamCodec::AAC => dg_stream_cheetah::CodecId::AAC,
+        MediaStreamCodec::ADPCM => dg_stream_cheetah::CodecId::ADPCM,
+        MediaStreamCodec::Opus => dg_stream_cheetah::CodecId::Opus,
+        MediaStreamCodec::G711A => dg_stream_cheetah::CodecId::G711A,
+        MediaStreamCodec::G711U => dg_stream_cheetah::CodecId::G711U,
+        MediaStreamCodec::MP2 => dg_stream_cheetah::CodecId::MP2,
+        MediaStreamCodec::MP3 => dg_stream_cheetah::CodecId::MP3,
+        MediaStreamCodec::Unknown => dg_stream_cheetah::CodecId::Unknown,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn format_from_cheetah(value: dg_stream_cheetah::FrameFormat) -> MediaStreamFormat {
+    match value {
+        dg_stream_cheetah::FrameFormat::CanonicalH26x => MediaStreamFormat::CanonicalH26x,
+        dg_stream_cheetah::FrameFormat::CanonicalAv1Obu => MediaStreamFormat::CanonicalAv1Obu,
+        dg_stream_cheetah::FrameFormat::CanonicalVp8Frame => MediaStreamFormat::CanonicalVp8Frame,
+        dg_stream_cheetah::FrameFormat::CanonicalVp9Frame => MediaStreamFormat::CanonicalVp9Frame,
+        dg_stream_cheetah::FrameFormat::MjpegFrame => MediaStreamFormat::MjpegFrame,
+        dg_stream_cheetah::FrameFormat::AacRaw => MediaStreamFormat::AacRaw,
+        dg_stream_cheetah::FrameFormat::AdpcmPacket => MediaStreamFormat::AdpcmPacket,
+        dg_stream_cheetah::FrameFormat::OpusPacket => MediaStreamFormat::OpusPacket,
+        dg_stream_cheetah::FrameFormat::G711Packet => MediaStreamFormat::G711Packet,
+        dg_stream_cheetah::FrameFormat::Mp2Frame => MediaStreamFormat::Mp2Frame,
+        dg_stream_cheetah::FrameFormat::Mp3Frame => MediaStreamFormat::Mp3Frame,
+        dg_stream_cheetah::FrameFormat::DataPacket => MediaStreamFormat::DataPacket,
+        dg_stream_cheetah::FrameFormat::Unknown => MediaStreamFormat::Unknown,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn format_to_cheetah(value: MediaStreamFormat) -> dg_stream_cheetah::FrameFormat {
+    match value {
+        MediaStreamFormat::CanonicalH26x => dg_stream_cheetah::FrameFormat::CanonicalH26x,
+        MediaStreamFormat::CanonicalAv1Obu => dg_stream_cheetah::FrameFormat::CanonicalAv1Obu,
+        MediaStreamFormat::CanonicalVp8Frame => dg_stream_cheetah::FrameFormat::CanonicalVp8Frame,
+        MediaStreamFormat::CanonicalVp9Frame => dg_stream_cheetah::FrameFormat::CanonicalVp9Frame,
+        MediaStreamFormat::MjpegFrame => dg_stream_cheetah::FrameFormat::MjpegFrame,
+        MediaStreamFormat::AacRaw => dg_stream_cheetah::FrameFormat::AacRaw,
+        MediaStreamFormat::AdpcmPacket => dg_stream_cheetah::FrameFormat::AdpcmPacket,
+        MediaStreamFormat::OpusPacket => dg_stream_cheetah::FrameFormat::OpusPacket,
+        MediaStreamFormat::G711Packet => dg_stream_cheetah::FrameFormat::G711Packet,
+        MediaStreamFormat::Mp2Frame => dg_stream_cheetah::FrameFormat::Mp2Frame,
+        MediaStreamFormat::Mp3Frame => dg_stream_cheetah::FrameFormat::Mp3Frame,
+        MediaStreamFormat::DataPacket => dg_stream_cheetah::FrameFormat::DataPacket,
+        MediaStreamFormat::Unknown => dg_stream_cheetah::FrameFormat::Unknown,
+    }
+}
+
+#[cfg(feature = "cheetah")]
+fn canonical_format(codec: CodecId) -> MediaStreamFormat {
+    match codec {
+        CodecId::H264 | CodecId::H265 | CodecId::H266 => MediaStreamFormat::CanonicalH26x,
+        CodecId::AV1 => MediaStreamFormat::CanonicalAv1Obu,
+        CodecId::VP8 => MediaStreamFormat::CanonicalVp8Frame,
+        CodecId::VP9 => MediaStreamFormat::CanonicalVp9Frame,
+        CodecId::MJPEG => MediaStreamFormat::MjpegFrame,
+        CodecId::AAC => MediaStreamFormat::AacRaw,
+        CodecId::ADPCM => MediaStreamFormat::AdpcmPacket,
+        CodecId::Opus => MediaStreamFormat::OpusPacket,
+        CodecId::G711A | CodecId::G711U => MediaStreamFormat::G711Packet,
+        CodecId::MP2 => MediaStreamFormat::Mp2Frame,
+        CodecId::MP3 => MediaStreamFormat::Mp3Frame,
+        CodecId::Unknown => MediaStreamFormat::Unknown,
     }
 }
 
