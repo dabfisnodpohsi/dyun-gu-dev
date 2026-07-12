@@ -169,10 +169,17 @@
 | TEST-01 | 未开始 | 精度回归 harness | 固定输入/参考输出、余弦相似度阈值、可复用 backend runner；mock 与 OpenVINO 进入通用 CI，硬件后端复用同一格式 | RT-02 |
 | TEST-02 | 未开始 | OpenVINO CPU 真实 CI | 安装/缓存 OpenVINO runtime，启用 backend feature，执行真实模型 load → infer → compare，并对 feature path clippy | SYS-01、TEST-01 |
 | TEST-03 | 未开始 | 补齐模型/码流 fuzz target | 除现有 config/C ABI 外，覆盖媒体码流/模型元数据等不可信解析面；CI 至少执行 `cargo fuzz check` | MEDIA-01 |
-| DEMO-01 | 未开始 | 无硬件多路流多算法综合 demo | `mock://` 多路输入经 decode/resize/inference/track/osd/push 跑通，CLI 集成测试验证，并记录 planned copy count | APP-01、MEDIA-02 |
+| DEMO-01 | 已完成 | 无硬件多路流多算法综合 demo | `mock://` 多路输入经 decode/resize/inference/track/osd/push 跑通，CLI 集成测试验证，并记录 planned copy count | APP-01、MEDIA-02 |
 | DOC-01 | 未开始 | 最终文档与状态收敛 | README/user guide/design 与实际字段、feature、示例、限制一致；删除“已完成”但无实现的陈述 | 其他软件任务 |
 
 > OBS-01 说明：`dg-graph` 在 `ElementIo` 收发和 bounded pipe 背压路径采集每节点指标，运行报告提供快照并通过 `MetricsSink` 保留后续 Prometheus 导出接口。
+
+> DEMO-01 说明：`dg demo --config examples/mock-multi-stream-demo.yaml` 在无硬件
+> 默认构建中向两个 `mock://` 输入发布合成帧，分别经过 `media_decode`、
+> `media_resize`、YOLO mock inference、`bytetrack`、`media_osd` 与 `rtmp_sink`；
+> track 结果同时进入 SDK-free sink 以验证完整分支。demo 使用
+> `ZeroCopyPlanner::plan_frame` 以 Host 域、HostBytes 句柄和完整 RGB 布局计算
+> 输入帧传输的 `TransferReport`，CLI 输出实际的 planned copy count，而不是硬编码。
 
 ## E. 需要真实硬件或自托管 runner 的最终验收
 

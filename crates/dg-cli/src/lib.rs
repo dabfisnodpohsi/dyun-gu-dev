@@ -1,8 +1,19 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use dg_core::{DataFormat, DataType, DeviceKind, MemoryDomain};
 use dg_graph::{Graph, GraphDiff, GraphReport, GraphSpec};
+use dg_media::{
+    FrameLayout, FrameTransferRequest, HandleKind, MediaFrame, MemoryDtype, MemoryFormat,
+    TransferReport, ZeroCopyPlanner,
+};
+use dg_stream::{
+    CodecId, MediaKind, MemoryStreamHub, PublisherSink, Rational32, TrackInfo, TrackReadiness,
+};
 use tracing_subscriber::EnvFilter;
 
 use dg_elements as _;
@@ -42,6 +53,10 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    Demo {
+        #[arg(long)]
+        config: PathBuf,
+    },
     Validate {
         #[arg(long)]
         config: PathBuf,
@@ -67,6 +82,14 @@ pub fn run(cli: Cli) -> Result<()> {
             format,
             watch,
         } => run_graph_with_watch(&config, format, watch),
+        Command::Demo { config } => {
+            let summary = run_demo(&config)?;
+            println!(
+                "demo completed: {} mock streams, {} frames, planned copy count: {}",
+                summary.streams, summary.frames, summary.planned_copy_count
+            );
+            Ok(())
+        }
         Command::Validate { config } => validate_graph(&config),
         Command::ListElements => list_elements(),
         Command::Schema { kind } => schema(kind.as_deref()),
@@ -75,6 +98,115 @@ pub fn run(cli: Cli) -> Result<()> {
 
 pub fn run_graph(path: &Path, format: OutputFormat) -> Result<()> {
     run_graph_with_watch(path, format, false)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DemoSummary {
+    pub streams: usize,
+    pub frames: usize,
+    pub planned_copy_count: usize,
+}
+
+const DEMO_INPUTS: [&str; 2] = ["mock://demo/input-a", "mock://demo/input-b"];
+const DEMO_FRAME_COUNT: usize = 3;
+
+pub fn run_demo(path: &Path) -> Result<DemoSummary> {
+    let spec = load_spec(path)?;
+    let publishers = DEMO_INPUTS
+        .iter()
+        .map(|url| seed_demo_stream(url))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = Graph::new(spec).context("build demo graph")?;
+    let report = graph.run().context("run demo graph")?;
+    for publisher in publishers {
+        publisher
+            .join()
+            .map_err(|_| anyhow::anyhow!("demo publisher thread panicked"))??;
+    }
+    let planned_copy_count = planned_demo_copy_count()?;
+    let frames = ["input_a", "input_b"]
+        .into_iter()
+        .filter_map(|name| report.element_metrics.get(name))
+        .map(|metrics| metrics.packets_processed)
+        .sum::<u64>() as usize;
+    Ok(DemoSummary {
+        streams: DEMO_INPUTS.len(),
+        frames,
+        planned_copy_count,
+    })
+}
+
+fn seed_demo_stream(url: &str) -> Result<JoinHandle<Result<()>>> {
+    let publisher = MemoryStreamHub::global().publish(url, Default::default())?;
+    let mut track = TrackInfo::new(1, MediaKind::Video, CodecId::MJPEG, 90_000);
+    track.readiness = TrackReadiness::Ready;
+    track.width = Some(2);
+    track.height = Some(2);
+    track.fps = Some(Rational32::new(30, 1));
+    publisher.update_tracks(vec![track])?;
+    let url = url.to_string();
+    Ok(std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while MemoryStreamHub::global().subscriber_count(&url) == 0 {
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("demo subscriber did not connect: {url}"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for index in 0..DEMO_FRAME_COUNT {
+            let mut frame = MediaFrame::from_host_bytes(
+                dg_media::MediaFrameKind::Tensor,
+                DataType::U8,
+                DataFormat::N,
+                vec![12],
+                DeviceKind::Cpu,
+                vec![u8::try_from(index)?; 12],
+            )?;
+            frame
+                .meta
+                .tags
+                .insert("media".to_string(), "video".to_string());
+            frame
+                .meta
+                .tags
+                .insert("keyframe".to_string(), (index == 0).to_string());
+            publisher.push_frame(Arc::new(frame))?;
+        }
+        publisher.close()?;
+        Ok(())
+    }))
+}
+
+fn planned_demo_copy_count() -> Result<usize> {
+    let layout = FrameLayout {
+        dims: vec![2, 2, 3],
+        format: MemoryFormat::Rgb24,
+        dtype: MemoryDtype::U8,
+        plane_count: 1,
+        strides: vec![6],
+        subsampling: None,
+        packed: true,
+    };
+    let request = FrameTransferRequest {
+        source_domain: MemoryDomain::Host,
+        target_domain: MemoryDomain::Host,
+        source_handle: HandleKind::HostBytes,
+        target_handle: HandleKind::HostBytes,
+        source_layout: layout.clone(),
+        target_layout: layout,
+        has_lifetime_guard: true,
+        staging_supported: true,
+        operation: "demo mock input to media pipeline".to_string(),
+    };
+    let report: TransferReport = ZeroCopyPlanner::new().plan_frame(&request)?;
+    tracing::info!(
+        source_domain = ?report.source_domain,
+        target_domain = ?report.target_domain,
+        path = ?report.path.domains,
+        copy_count = report.copy_count,
+        "demo planned frame transfer"
+    );
+    Ok(report.copy_count)
 }
 
 fn run_graph_with_watch(path: &Path, format: OutputFormat, watch: bool) -> Result<()> {
@@ -361,6 +493,16 @@ connections:
             .join("../../examples/mock-multi-algorithm.yaml");
         validate_graph(&path).expect("validate documented example");
         run_graph(&path, OutputFormat::Json).expect("run documented example");
+    }
+
+    #[test]
+    fn multi_stream_demo_runs_and_reports_planned_copy_count() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/mock-multi-stream-demo.yaml");
+        let summary = super::run_demo(&path).expect("run multi-stream demo");
+        assert_eq!(summary.streams, 2);
+        assert_eq!(summary.frames, 6);
+        assert_eq!(summary.planned_copy_count, 0);
     }
 
     #[test]
