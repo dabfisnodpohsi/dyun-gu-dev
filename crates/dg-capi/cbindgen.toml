@@ -18,6 +18,10 @@ include = [
     "DgEngine",
     "DgTensor",
     "DgBuffer",
+    "DgBackend",
+    "DgBackendKind",
+    "DgBackendCapabilities",
+    "DgTensorInfo",
 ]
 
 [struct]

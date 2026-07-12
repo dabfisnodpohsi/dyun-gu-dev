@@ -5,9 +5,11 @@
 //! crate to the real Sophon runtime adapter through `dg-sophon-sys`, which
 //! requires `LIBSOPHON_ROOT` to point at a local SDK installation.
 
-#[cfg(feature = "backend")]
+#[cfg(any(feature = "backend", test))]
 mod backend;
 pub mod convert;
+#[cfg(all(test, not(feature = "backend")))]
+mod mock_sys;
 pub mod validate;
 
 pub use dg_runtime::SophonOptions;

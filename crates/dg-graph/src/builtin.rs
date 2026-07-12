@@ -299,6 +299,7 @@ impl Element for SinkElement {
                     "expected tensor or detections payload".to_string(),
                 ));
             }
+            io.finish_packet()?;
         }
     }
 }

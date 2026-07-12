@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -14,6 +14,7 @@ use tracing::{error, info};
 
 use crate::element::{Element, ElementHandle, ElementIo, EosState};
 use crate::error::{Error, Result};
+use crate::metrics::{ElementMetrics, ElementMetricsSnapshot, MetricsSink};
 use crate::pipe::{DataPipe, PipeReceiver, PipeSender};
 use crate::pool::ThreadPool;
 use crate::registry::create_element;
@@ -52,6 +53,15 @@ pub struct GraphReport {
     pub faces: BTreeMap<String, Vec<FaceDetection>>,
     pub tracks: BTreeMap<String, Vec<Track>>,
     pub ocr: BTreeMap<String, Vec<OcrText>>,
+    pub element_metrics: BTreeMap<String, ElementMetricsSnapshot>,
+}
+
+impl GraphReport {
+    pub fn export_metrics(&self, sink: &dyn MetricsSink) {
+        for (node, metrics) in &self.element_metrics {
+            sink.record(node, metrics);
+        }
+    }
 }
 
 type SinkMap = BTreeMap<String, Arc<Mutex<crate::element::SinkCollector>>>;
@@ -144,7 +154,7 @@ impl Graph {
             queue_capacity = self.spec.execution.queue_capacity,
             "starting graph execution"
         );
-        let (runtime, sinks) = RuntimeGraph::build(self.spec.clone(), inputs)?;
+        let (runtime, sinks, metrics) = RuntimeGraph::build(self.spec.clone(), inputs)?;
         runtime.run()?;
         let mut report = GraphReport::default();
         for (name, sink) in sinks {
@@ -193,6 +203,24 @@ impl Graph {
                     .collect(),
             );
         }
+        for (node, metrics) in metrics {
+            let snapshot = metrics.snapshot();
+            info!(
+                node = %node,
+                packets_processed = snapshot.packets_processed,
+                packets_received = snapshot.packets_received,
+                packets_sent = snapshot.packets_sent,
+                processing_latency_ns = snapshot.processing_latency_ns,
+                processing_latency_avg_ns = snapshot.processing_latency_avg_ns,
+                processing_latency_max_ns = snapshot.processing_latency_max_ns,
+                queue_depth = snapshot.queue_depth,
+                max_queue_depth = snapshot.max_queue_depth,
+                drop_count = snapshot.drop_count,
+                backpressure_count = snapshot.backpressure_count,
+                "element metrics"
+            );
+            report.element_metrics.insert(node, snapshot);
+        }
         Ok(report)
     }
 }
@@ -205,7 +233,10 @@ pub struct RuntimeGraph {
 }
 
 impl RuntimeGraph {
-    fn build(spec: GraphSpec, inputs: HashMap<String, Vec<Tensor>>) -> Result<(Self, SinkMap)> {
+    fn build(
+        spec: GraphSpec,
+        inputs: HashMap<String, Vec<Tensor>>,
+    ) -> Result<(Self, SinkMap, BTreeMap<String, Arc<ElementMetrics>>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut nodes: BTreeMap<String, NodeRuntime> = BTreeMap::new();
         for node in &spec.nodes {
@@ -311,7 +342,10 @@ impl RuntimeGraph {
 
         let total_elements = nodes.values().map(|node| node.elements.len()).sum();
         let mut exec_nodes = Vec::with_capacity(total_elements);
+        let mut metrics = BTreeMap::new();
         for node in nodes.into_values() {
+            let node_metrics = Arc::new(ElementMetrics::default());
+            metrics.insert(node.name.clone(), node_metrics.clone());
             let eos = Arc::new(Mutex::new(EosState {
                 seen: false,
                 broadcasts: 0,
@@ -329,6 +363,8 @@ impl RuntimeGraph {
                     stop: stop.clone(),
                     send_backoff: Duration::from_millis(1),
                     eos: eos.clone(),
+                    metrics: node_metrics.clone(),
+                    packet_starts: std::cell::RefCell::new(VecDeque::new()),
                 };
                 exec_nodes.push(ExecNode {
                     name: node.name.clone(),
@@ -346,6 +382,7 @@ impl RuntimeGraph {
                 execution: spec.execution.clone(),
             },
             sinks,
+            metrics,
         ))
     }
 

@@ -21,12 +21,16 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::{debug, trace};
 
+#[cfg(not(feature = "backend"))]
+use crate::mock_sys as sys;
+#[cfg(feature = "backend")]
 use dg_sophon_sys as sys;
 
 use crate::convert::{self, SophonDataType};
 use crate::validate::{validate_deploy_mode, validate_options};
 
 /// Returns `true` when the real Sophon runtime is compiled in.
+#[cfg_attr(test, allow(dead_code))]
 pub const fn backend_enabled() -> bool {
     true
 }
@@ -531,9 +535,12 @@ fn check_status(status: sys::bm_status_t, context: &str) -> Result<()> {
 /// # Safety
 /// `ptr` must be a pointer returned by the vendor library's allocator, or null.
 unsafe fn free_c(ptr: *mut c_void) {
+    #[cfg(feature = "backend")]
     if !ptr.is_null() {
         libc::free(ptr);
     }
+    #[cfg(not(feature = "backend"))]
+    crate::mock_sys::free_c(ptr);
 }
 
 fn create_sophon_backend() -> Box<dyn InferBackend> {
@@ -568,5 +575,47 @@ inventory::submit! {
         name: "sophon",
         create: create_sophon_backend,
         configure: configure_sophon,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_sys;
+
+    fn option() -> RuntimeOption {
+        RuntimeOption::new(
+            BackendKind::Sophon,
+            ModelSource::Bytes(mock_sys::encode_mock_model()),
+            BackendOptions::Sophon(SophonOptions::default()),
+        )
+    }
+
+    #[test]
+    fn mock_adapter_initializes_and_inspects_network() {
+        let mut backend = SophonBackend::new();
+        backend.init(&option()).expect("mock Sophon init");
+        assert_eq!(backend.input_count(), 1);
+        assert_eq!(backend.output_count(), 1);
+        assert_eq!(backend.input_info(0).expect("input").shape.dims(), &[1, 4]);
+    }
+
+    #[test]
+    fn mock_adapter_runs_round_trip_and_rejects_invalid_inputs() {
+        let mut backend = SophonBackend::new();
+        backend.init(&option()).expect("mock Sophon init");
+        let info = backend.input_info(0).expect("input").clone();
+        let device = dg_core::CpuDevice::new();
+        let input = info.allocate(&device).expect("input allocation");
+        input
+            .buffer()
+            .write_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            .expect("input bytes");
+        let outputs = backend.run(std::slice::from_ref(&input)).expect("run");
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            input.buffer().read_bytes()
+        );
+        assert!(matches!(backend.run(&[]), Err(Error::InvalidOption(_))));
     }
 }

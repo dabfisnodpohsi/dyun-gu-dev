@@ -12,6 +12,9 @@ use dg_runtime::{
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
+#[cfg(not(feature = "backend"))]
+use crate::mock_sys as sys;
+#[cfg(feature = "backend")]
 use dg_rknn_sys as sys;
 
 use crate::io::{
@@ -20,6 +23,7 @@ use crate::io::{
 };
 
 /// Returns `true` when the real RKNN backend is compiled in.
+#[cfg_attr(test, allow(dead_code))]
 pub const fn backend_enabled() -> bool {
     true
 }
@@ -770,4 +774,51 @@ fn release_outputs(context: sys::rknn_context, outputs: &mut [sys::rknn_output])
     let status =
         unsafe { sys::rknn_outputs_release(context, outputs.len() as u32, outputs.as_mut_ptr()) };
     check_status(status, "rknn_outputs_release")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_sys;
+    use dg_core::CpuDevice;
+
+    fn option() -> RuntimeOption {
+        RuntimeOption::new(
+            BackendKind::Rknn,
+            dg_runtime::ModelSource::Bytes(mock_sys::encode_mock_model()),
+            BackendOptions::Rknn(RknnOptions::default()),
+        )
+    }
+
+    #[test]
+    fn mock_adapter_initializes_and_reports_bindings() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        assert_eq!(backend.input_count(), 1);
+        assert_eq!(backend.output_count(), 1);
+        assert_eq!(backend.input_info(0).expect("input").shape.dims(), &[1, 4]);
+        assert_eq!(
+            backend.output_info(0).expect("output").shape.dims(),
+            &[1, 4]
+        );
+    }
+
+    #[test]
+    fn mock_adapter_runs_round_trip_and_rejects_invalid_inputs() {
+        let mut backend = RknnBackend::new();
+        backend.init(&option()).expect("mock RKNN init");
+        let info = backend.input_info(0).expect("input").clone();
+        let device = CpuDevice::new();
+        let input = info.allocate(&device).expect("input allocation");
+        input
+            .buffer()
+            .write_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            .expect("input bytes");
+        let outputs = backend.run(std::slice::from_ref(&input)).expect("run");
+        assert_eq!(
+            outputs[0].buffer().read_bytes(),
+            input.buffer().read_bytes()
+        );
+        assert!(matches!(backend.run(&[]), Err(Error::InvalidOption(_))));
+    }
 }

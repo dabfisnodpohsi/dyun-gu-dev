@@ -16,6 +16,9 @@ use dg_core::{
 use dg_graph::{Graph, GraphDiff, GraphFormat, GraphSpec, NodeSpec};
 #[cfg(feature = "media")]
 use dg_media as _;
+use dg_runtime::{
+    configure_backend, create_backend, BackendConfig, BackendKind, InferBackend, ModelSource,
+};
 #[cfg(feature = "stream")]
 use dg_stream as _;
 use serde_json::{Map, Value};
@@ -114,6 +117,38 @@ pub enum DgMemoryDomain {
     Opaque = 7,
 }
 
+/// Backend family for direct backend lifecycle operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DgBackendKind {
+    Mock = 0,
+    OpenVino = 1,
+    Rknn = 2,
+    TensorRt = 3,
+    Sophon = 4,
+}
+
+/// Fixed-size tensor metadata returned by direct backend queries.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DgTensorInfo {
+    pub dtype: DgDataType,
+    pub format: DgDataFormat,
+    pub device: DgDeviceKind,
+    pub rank: usize,
+    pub shape: [usize; 8],
+}
+
+/// Runtime capabilities returned by a direct backend.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DgBackendCapabilities {
+    pub device_count: usize,
+    pub devices: [DgDeviceKind; 8],
+    pub precision_count: usize,
+    pub precisions: [DgDataType; 16],
+}
+
 /// Opaque graph engine handle.
 pub struct DgEngine {
     inner: Engine,
@@ -127,6 +162,11 @@ pub struct DgTensor {
 /// Opaque buffer handle.
 pub struct DgBuffer {
     buffer: Buffer,
+}
+
+/// Opaque direct inference backend handle.
+pub struct DgBackend {
+    backend: Box<dyn InferBackend>,
 }
 
 struct Engine {
@@ -357,6 +397,97 @@ fn domain_from_c(domain: DgMemoryDomain) -> MemoryDomain {
         DgMemoryDomain::MppBuffer => MemoryDomain::MppBuffer,
         DgMemoryDomain::SophonDevice => MemoryDomain::SophonDevice,
         DgMemoryDomain::Opaque => MemoryDomain::Opaque,
+    }
+}
+
+fn backend_kind_from_c(kind: DgBackendKind) -> BackendKind {
+    match kind {
+        DgBackendKind::Mock => BackendKind::Mock,
+        DgBackendKind::OpenVino => BackendKind::OpenVINO,
+        DgBackendKind::Rknn => BackendKind::Rknn,
+        DgBackendKind::TensorRt => BackendKind::TensorRt,
+        DgBackendKind::Sophon => BackendKind::Sophon,
+    }
+}
+
+fn backend_name(kind: DgBackendKind) -> &'static str {
+    match kind {
+        DgBackendKind::Mock => "mock",
+        DgBackendKind::OpenVino => "openvino",
+        DgBackendKind::Rknn => "rknn",
+        DgBackendKind::TensorRt => "tensorrt",
+        DgBackendKind::Sophon => "sophon",
+    }
+}
+
+fn c_dtype(dtype: DataType) -> Result<DgDataType, (DgStatus, String)> {
+    let value = match (dtype.code, dtype.bits, dtype.lanes) {
+        (TypeCode::Uint, 8, 1) => DgDataType::U8,
+        (TypeCode::Uint, 16, 1) => DgDataType::U16,
+        (TypeCode::Int, 4, 1) => DgDataType::I4,
+        (TypeCode::Int, 8, 1) => DgDataType::I8,
+        (TypeCode::Int, 16, 1) => DgDataType::I16,
+        (TypeCode::Float4, 4, 1) => DgDataType::F4,
+        (TypeCode::Float8, 8, 1) => DgDataType::F8,
+        (TypeCode::Float, 16, 1) => DgDataType::F16,
+        (TypeCode::Bfloat, 16, 1) => DgDataType::Bf16,
+        (TypeCode::Float, 32, 1) => DgDataType::F32,
+        (TypeCode::Float, 64, 1) => DgDataType::F64,
+        (TypeCode::Uint, 32, 1) => DgDataType::U32,
+        (TypeCode::Int, 32, 1) => DgDataType::I32,
+        (TypeCode::Uint, 64, 1) => DgDataType::U64,
+        (TypeCode::Int, 64, 1) => DgDataType::I64,
+        _ => {
+            return Err((
+                DgStatus::Unsupported,
+                format!("unsupported data type: {dtype:?}"),
+            ));
+        }
+    };
+    Ok(value)
+}
+
+fn c_format(format: DataFormat) -> DgDataFormat {
+    match format {
+        DataFormat::Auto => DgDataFormat::Auto,
+        DataFormat::N => DgDataFormat::N,
+        DataFormat::NC => DgDataFormat::Nc,
+        DataFormat::NCHW => DgDataFormat::Nchw,
+        DataFormat::NHWC => DgDataFormat::Nhwc,
+        DataFormat::NC4HW => DgDataFormat::Nc4hw,
+        DataFormat::NC8HW => DgDataFormat::Nc8hw,
+        DataFormat::NCDHW => DgDataFormat::Ncdhw,
+        DataFormat::OIHW => DgDataFormat::Oihw,
+    }
+}
+
+fn c_tensor_info(info: &dg_runtime::TensorInfo) -> Result<DgTensorInfo, (DgStatus, String)> {
+    let dims = info.shape.dims();
+    if dims.len() > 8 {
+        return Err((
+            DgStatus::Unsupported,
+            "tensor rank exceeds the C ABI limit of 8".to_string(),
+        ));
+    }
+    let mut shape = [0; 8];
+    shape[..dims.len()].copy_from_slice(dims);
+    Ok(DgTensorInfo {
+        dtype: c_dtype(info.dtype)?,
+        format: c_format(info.layout.unwrap_or(DataFormat::Auto)),
+        device: DgDeviceKind::Cpu,
+        rank: dims.len(),
+        shape,
+    })
+}
+
+fn c_device(device: DeviceKind) -> DgDeviceKind {
+    match device {
+        DeviceKind::Cpu => DgDeviceKind::Cpu,
+        DeviceKind::IntelGpu => DgDeviceKind::IntelGpu,
+        DeviceKind::IntelNpu => DgDeviceKind::IntelNpu,
+        DeviceKind::CudaGpu => DgDeviceKind::CudaGpu,
+        DeviceKind::RknnNpu => DgDeviceKind::RknnNpu,
+        DeviceKind::SophonTpu => DgDeviceKind::SophonTpu,
     }
 }
 
@@ -831,6 +962,225 @@ pub unsafe extern "C" fn dg_engine_run(engine: *mut DgEngine) -> DgStatus {
     }
 }
 
+/// Creates and initializes a backend without constructing a graph.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_create(
+    kind: DgBackendKind,
+    model_data: *const u8,
+    model_length: usize,
+    options_json: *const c_char,
+    out: *mut *mut DgBackend,
+) -> DgStatus {
+    match ffi_result(|| {
+        if out.is_null() {
+            return Err((
+                DgStatus::NullPointer,
+                "backend output pointer is null".to_string(),
+            ));
+        }
+        let model = unsafe { bytes(model_data, model_length)? }.to_vec();
+        let options = if options_json.is_null() {
+            Value::Object(Map::new())
+        } else {
+            let text = unsafe { c_string(options_json)? }
+                .to_str()
+                .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+            serde_json::from_str(text).map_err(|error| (DgStatus::ParseError, error.to_string()))?
+        };
+        let config = BackendConfig::new(None, options);
+        let mut option = configure_backend(backend_name(kind), config)
+            .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        option.model_source = ModelSource::Bytes(model);
+        let mut backend = create_backend(backend_kind_from_c(kind))
+            .map_err(|error| (DgStatus::Unsupported, error.to_string()))?;
+        backend
+            .init(&option)
+            .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
+        let handle = DgBackend { backend };
+        unsafe { out.write(Box::into_raw(Box::new(handle))) };
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Frees a direct backend handle. Null is accepted.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_free(backend: *mut DgBackend) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !backend.is_null() {
+            // SAFETY: the pointer must have been returned by `dg_backend_create` exactly once.
+            unsafe { drop(Box::from_raw(backend)) };
+        }
+    }));
+}
+
+/// Returns the number of backend inputs and outputs.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_io_counts(
+    backend: *const DgBackend,
+    out_inputs: *mut usize,
+    out_outputs: *mut usize,
+) -> DgStatus {
+    match ffi_result(|| {
+        if backend.is_null() || out_inputs.is_null() || out_outputs.is_null() {
+            return Err((
+                DgStatus::NullPointer,
+                "backend or count output pointer is null".to_string(),
+            ));
+        }
+        let backend = unsafe { &*backend };
+        unsafe {
+            out_inputs.write(backend.backend.input_count());
+            out_outputs.write(backend.backend.output_count());
+        }
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Queries runtime device and precision capabilities.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_capabilities(
+    backend: *const DgBackend,
+    out: *mut DgBackendCapabilities,
+) -> DgStatus {
+    match ffi_result(|| {
+        if backend.is_null() || out.is_null() {
+            return Err((
+                DgStatus::NullPointer,
+                "backend or capabilities output pointer is null".to_string(),
+            ));
+        }
+        let backend = unsafe { &*backend };
+        let capabilities = backend
+            .backend
+            .probe_capabilities()
+            .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
+        if capabilities.devices.len() > 8 || capabilities.precisions.len() > 16 {
+            return Err((
+                DgStatus::Unsupported,
+                "runtime capabilities exceed the C ABI limits".to_string(),
+            ));
+        }
+        let mut devices = [DgDeviceKind::Cpu; 8];
+        for (slot, device) in capabilities.devices.iter().copied().enumerate() {
+            devices[slot] = c_device(device);
+        }
+        let mut precisions = [DgDataType::U8; 16];
+        for (slot, precision) in capabilities.precisions.iter().copied().enumerate() {
+            precisions[slot] = c_dtype(precision)?;
+        }
+        unsafe {
+            out.write(DgBackendCapabilities {
+                device_count: capabilities.devices.len(),
+                devices,
+                precision_count: capabilities.precisions.len(),
+                precisions,
+            });
+        }
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Queries one input or output tensor description.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_tensor_info(
+    backend: *const DgBackend,
+    output: bool,
+    index: usize,
+    out: *mut DgTensorInfo,
+) -> DgStatus {
+    match ffi_result(|| {
+        if backend.is_null() || out.is_null() {
+            return Err((
+                DgStatus::NullPointer,
+                "backend or tensor-info output pointer is null".to_string(),
+            ));
+        }
+        let backend = unsafe { &*backend };
+        let info = if output {
+            backend.backend.output_info(index)
+        } else {
+            backend.backend.input_info(index)
+        }
+        .map_err(|error| (DgStatus::InvalidArgument, error.to_string()))?;
+        let info = c_tensor_info(info)?;
+        unsafe { out.write(info) };
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// Runs direct backend inference over caller-owned tensor handles.
+#[no_mangle]
+pub unsafe extern "C" fn dg_backend_run(
+    backend: *mut DgBackend,
+    inputs: *const *const DgTensor,
+    input_count: usize,
+    outputs: *mut *mut DgTensor,
+    output_capacity: usize,
+    out_count: *mut usize,
+) -> DgStatus {
+    match ffi_result(|| {
+        if backend.is_null() || out_count.is_null() {
+            return Err((
+                DgStatus::NullPointer,
+                "backend or output-count pointer is null".to_string(),
+            ));
+        }
+        if input_count > 0 && inputs.is_null() {
+            return Err((DgStatus::NullPointer, "input array is null".to_string()));
+        }
+        let backend = unsafe { &mut *backend };
+        let input_handles = if input_count == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the caller supplies `input_count` valid tensor pointers.
+            unsafe { std::slice::from_raw_parts(inputs, input_count) }
+        };
+        let mut tensors = Vec::with_capacity(input_count);
+        for handle in input_handles {
+            if handle.is_null() {
+                return Err((DgStatus::NullPointer, "input tensor is null".to_string()));
+            }
+            // SAFETY: each pointer was checked non-null and must reference a live tensor.
+            tensors.push(unsafe { &**handle }.tensor.clone());
+        }
+        let produced = backend
+            .backend
+            .run(&tensors)
+            .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
+        let produced_count = produced.len();
+        if produced.len() > output_capacity || (!produced.is_empty() && outputs.is_null()) {
+            return Err((
+                DgStatus::InvalidArgument,
+                "output array capacity is too small".to_string(),
+            ));
+        }
+        for (slot, tensor) in produced.into_iter().enumerate() {
+            unsafe {
+                outputs
+                    .add(slot)
+                    .write(Box::into_raw(Box::new(DgTensor { tensor })))
+            };
+        }
+        unsafe { out_count.write(produced_count) };
+        Ok(())
+    }) {
+        Ok(()) => DgStatus::Ok,
+        Err(status) => status,
+    }
+}
+
 /// Creates a host tensor from a caller-owned byte array.
 #[no_mangle]
 pub unsafe extern "C" fn dg_tensor_create(
@@ -909,7 +1259,6 @@ pub unsafe extern "C" fn dg_tensor_create_external(
             domain_from_c(domain),
             BufferDesc::new(size_bytes, 1),
             external,
-            vec![0; size_bytes],
             ExternalDropGuard::new(|| {}),
         )
         .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
@@ -950,7 +1299,12 @@ pub unsafe extern "C" fn dg_tensor_data(
             ));
         }
         let tensor = unsafe { &*tensor };
-        let snapshot = tensor.tensor.buffer().read_bytes().into_boxed_slice();
+        let snapshot = tensor
+            .tensor
+            .buffer()
+            .try_read_bytes()
+            .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?
+            .into_boxed_slice();
         let length = snapshot.len();
         LAST_DATA.with(|last| *last.borrow_mut() = Some(snapshot));
         let data = LAST_DATA.with(|last| {
@@ -1059,7 +1413,6 @@ pub unsafe extern "C" fn dg_buffer_import_external(
             domain_from_c(domain),
             BufferDesc::new(size_bytes, 1),
             external,
-            vec![0; size_bytes],
             ExternalDropGuard::new(|| {}),
         )
         .map_err(|error| (DgStatus::RuntimeError, error.to_string()))?;
@@ -1114,6 +1467,18 @@ mod tests {
     use std::ffi::CString;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn unsupported_dtype_is_rejected_instead_of_mapped_to_u8() {
+        let dtype = DataType::new(TypeCode::OpaqueHandle, 8, 1);
+        let error = c_dtype(dtype).expect_err("opaque dtype must be unsupported");
+        assert_eq!(error.0, DgStatus::Unsupported);
+        assert!(error.1.contains("unsupported data type"));
+
+        let info = dg_runtime::TensorInfo::new(dg_core::Shape::new([1]), dtype);
+        let error = c_tensor_info(&info).expect_err("opaque tensor dtype must be unsupported");
+        assert_eq!(error.0, DgStatus::Unsupported);
+    }
 
     fn graph_spec() -> CString {
         CString::new(
@@ -1423,5 +1788,133 @@ connections: []
         assert_eq!(unsafe { dg_buffer_size(buffer, &mut size) }, DgStatus::Ok);
         assert_eq!(size, 16);
         unsafe { dg_buffer_free(buffer) };
+    }
+
+    #[test]
+    fn direct_backend_lifecycle_queries_and_runs_mock() {
+        let options = CString::new(r#"{"shape":[1,4],"echo_inputs":true}"#).expect("options");
+        let mut backend = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dg_backend_create(
+                    DgBackendKind::Mock,
+                    ptr::null(),
+                    0,
+                    options.as_ptr(),
+                    &mut backend,
+                )
+            },
+            DgStatus::Ok
+        );
+        let mut input_count = 0;
+        let mut output_count = 0;
+        assert_eq!(
+            unsafe { dg_backend_io_counts(backend, &mut input_count, &mut output_count) },
+            DgStatus::Ok
+        );
+        assert_eq!((input_count, output_count), (1, 1));
+        let mut capabilities = DgBackendCapabilities {
+            device_count: 0,
+            devices: [DgDeviceKind::Cpu; 8],
+            precision_count: 0,
+            precisions: [DgDataType::U8; 16],
+        };
+        assert_eq!(
+            unsafe { dg_backend_capabilities(backend, &mut capabilities) },
+            DgStatus::Ok
+        );
+        assert_eq!(capabilities.device_count, 1);
+        assert_eq!(capabilities.devices[0], DgDeviceKind::Cpu);
+        assert!(capabilities.precision_count > 0);
+        let mut info = DgTensorInfo {
+            dtype: DgDataType::U8,
+            format: DgDataFormat::Auto,
+            device: DgDeviceKind::Cpu,
+            rank: 0,
+            shape: [0; 8],
+        };
+        assert_eq!(
+            unsafe { dg_backend_tensor_info(backend, false, 0, &mut info) },
+            DgStatus::Ok
+        );
+        assert_eq!(info.dtype, DgDataType::F32);
+        assert_eq!(&info.shape[..info.rank], &[1, 4]);
+
+        let input_bytes = [1.0_f32, 2.0, 3.0, 4.0]
+            .into_iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        let shape = [1_usize, 4];
+        let mut input = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dg_tensor_create(
+                    input_bytes.as_ptr(),
+                    input_bytes.len(),
+                    shape.as_ptr(),
+                    shape.len(),
+                    DgDataType::F32,
+                    DgDataFormat::Nc,
+                    DgDeviceKind::Cpu,
+                    &mut input,
+                )
+            },
+            DgStatus::Ok
+        );
+        let input_ptr = input as *const DgTensor;
+        let mut output = ptr::null_mut();
+        let mut output_count_result = 0;
+        assert_eq!(
+            unsafe {
+                dg_backend_run(
+                    backend,
+                    &input_ptr,
+                    1,
+                    &mut output,
+                    1,
+                    &mut output_count_result,
+                )
+            },
+            DgStatus::Ok
+        );
+        assert_eq!(output_count_result, 1);
+        let mut output_data = ptr::null();
+        let mut output_length = 0;
+        assert_eq!(
+            unsafe { dg_tensor_data(output, &mut output_data, &mut output_length) },
+            DgStatus::Ok
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(output_data, output_length) },
+            input_bytes.as_slice()
+        );
+        unsafe {
+            dg_tensor_free(output);
+            dg_tensor_free(input);
+            dg_backend_free(backend);
+        }
+    }
+
+    #[test]
+    fn direct_backend_null_and_bad_configuration_are_rejected() {
+        assert_eq!(
+            unsafe { dg_backend_io_counts(ptr::null(), ptr::null_mut(), ptr::null_mut()) },
+            DgStatus::NullPointer
+        );
+        let options = CString::new(r#"{"unknown":true}"#).expect("options");
+        let mut backend = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dg_backend_create(
+                    DgBackendKind::Mock,
+                    ptr::null(),
+                    0,
+                    options.as_ptr(),
+                    &mut backend,
+                )
+            },
+            DgStatus::InvalidArgument
+        );
+        assert!(backend.is_null());
     }
 }

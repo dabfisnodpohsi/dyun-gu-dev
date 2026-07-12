@@ -56,14 +56,14 @@
 | SYS-02 | 已完成 | `dg-rknn-sys` 分层 | bindgen/build/link/unsafe 移入 `dg-rknn-sys`；安全 crate 仅 RAII 与 `InferBackend` | 无 |
 | SYS-03 | 已完成 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
 | SYS-04 | 已完成 | `dg-sophon-sys` 分层 | BMRuntime/bmlib bindings、link 和 raw calls 移入 `dg-sophon-sys` | 无 |
-| BE-01 | 未开始 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
+| BE-01 | 已完成 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
 | RT-01 | 已完成 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
 | RT-02 | 已完成 | 运行期 SDK/设备能力探测 | 各后端 init 查询 SDK 版本、设备、精度和部署能力；静态表仅为无硬件 fallback；不支持时给出明确诊断且不静默降级 | SYS-01 至 SYS-04 |
 | SCH-01 | 已完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
 | SCH-02 | 已完成 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
-| MEM-01 | 未开始 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
+| MEM-01 | 已完成 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
 | MEM-02 | 未开始 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
-| CAPI-01 | 未开始 | C ABI 后端直接生命周期与能力接口 | 提供 backend 创建/配置/能力查询/销毁，不要求调用者必须构造 Graph；同步头文件、错误码与 C 示例 | RT-01、RT-02 |
+| CAPI-01 | 已完成 | C ABI 后端直接生命周期与能力接口 | `DgBackend` 提供直接创建/初始化、输入输出能力查询、mock 推理运行与销毁；cbindgen 头文件、Rust FFI 测试和 `direct_backend.c` 示例同步更新 | RT-01、RT-02 |
 
 > SYS-01 说明：社区 `openvino` crate 的 FFI/link 依赖已隔离到
 > `dg-openvino-sys`；`dg-openvino` 仅保留 `#![forbid(unsafe_code)]` 的安全
@@ -82,9 +82,17 @@
 > 安全适配和 SDK-free 的 `mock_sys` 测试路径。默认构建不启用 backend，
 > 因此仍不需要 CUDA 或 TensorRT SDK。
 
+> BE-01 说明：RKNN 与 Sophon 的真实 `InferBackend` 适配器现在分别以
+> SDK-free 的 `mock_sys` FFI shim 编译并测试；shim 仅替代厂商符号，RAII、
+> 错误转换、reshape 和 run 仍走真实 adapter。默认无硬件测试不需要厂商 SDK。
+
 > CORE-01 说明：`dg-core` 通过 inventory 注册 Device/Stream/Event adapter，
 > 并提供 CPU 参考实现的 `MemoryPool`/`Allocator`；默认构建保持 SDK-free，
 > 厂商设备 adapter 延后到后续 MEM-*/RT-* 任务。
+
+> MEM-01 说明：`dg-core::Buffer` 支持不分配 host backing 的 external-only
+> 表示，外部句柄仍由 `ExternalDropGuard` 通过共享所有权 RAII 管理；host
+> 访问需显式 `map`/`map_with`，MEM-02 的各后端 zero-copy 绑定建立在该句柄表示上。
 
 > RT-01 说明：`dg-runtime` 增加统一 `RuntimeOption` 字段、`run_with_stream`
 > 以及 `Runtime` 的 submit/poll 入口；厂商字段映射延后到 RT-02、SCH-01 和
@@ -98,6 +106,11 @@
 > case 配置 absolute/relative epsilon 与 cosine threshold；JSON fixtures
 > 通过 mock backend 在普通 `cargo test --workspace` 中执行，并在形状、
 > NaN、误差超限时报告具体 tensor/index 上下文。
+
+> CAPI-01 说明：C ABI 通过 `DgBackend` 提供无需构造 Graph 的直接
+> create/init、capability 与 tensor-info 查询、run 和 free 生命周期，并复用
+> `dg-runtime` 现有 backend factory；cbindgen 头文件与 `direct_backend.c`
+> 示例保持同步。
 
 > SCH-01 说明：`CoreSelection` 统一下沉到 `dg-core`，注册设备用于构建
 > topology；Graph inference 获取 lease 并回写 RuntimeOption 的 device/core/deploy；
@@ -118,9 +131,11 @@
 | STREAM-02 | 已完成 | cheetah frame 元数据保真 | push/pull 保留 track id、media kind、codec、format、timebase、PTS/DTS 与 extradata，不再写死 Unknown/Data | STREAM-01 |
 | MEDIA-02 | 未开始 | frame bridge 与 planner 接入真实数据路径 | avcodec Image/Packet、cheetah AVFrame、dg-core Buffer/Tensor 共享兼容句柄；staging fallback 显式记录域、路径、copy count | MEDIA-01、STREAM-02、MEM-01 |
 | ELEM-01 | 已完成 | `filter` element | 注册可配置、可验证、Sans-I/O 的 filter；覆盖 pass/drop 和未知字段测试 | CFG-04 |
-| ELEM-02 | 未开始 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
+| ELEM-02 | 已完成 | `http_push` element | 注册可配置 HTTP sink/driver；请求失败明确报错；网络 I/O 与 element 核心逻辑分层并可注入测试 driver | CFG-04 |
 
 > ELEM-01 说明：`filter` 以 `mode: pass|drop` 配置，加载期拒绝未知字段和非法值；运行时仅转发/丢弃 packet 并传播 EOS。
+
+> ELEM-02 说明：`http_push` 通过可安装的 Sans-I/O driver 推送 `http://`/`https://` 请求；driver 失败会定位到节点和 URL，并有注入式测试覆盖。
 
 > MEDIA-01 说明：已实现真实 JPEG/MJPEG 与视频 decode/encode adapter。`dg-media` 通过
 > `default_registry_builder()` 注册当前编译进来的 avcodec 后端，并使用 `backend_hint` 按
@@ -146,12 +161,14 @@
 
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
-| OBS-01 | 未开始 | element 运行指标 | 每节点输出吞吐、处理时延、队列深度、drop/backpressure 计数；结构化 tracing 可测试，保留后续 Prometheus 接口 | 无 |
+| OBS-01 | 已完成 | element 运行指标 | 每节点输出吞吐、处理时延、队列深度、drop/backpressure 计数；结构化 tracing 可测试，保留后续 Prometheus 接口 | 无 |
 | TEST-01 | 已完成 | 精度回归 harness | 固定输入/参考输出、余弦相似度阈值、可复用 backend runner；mock 与 OpenVINO 进入通用 CI，硬件后端复用同一格式 | RT-02 |
 | TEST-02 | 未开始 | OpenVINO CPU 真实 CI | 安装/缓存 OpenVINO runtime，启用 backend feature，执行真实模型 load → infer → compare，并对 feature path clippy | SYS-01、TEST-01 |
 | TEST-03 | 未开始 | 补齐模型/码流 fuzz target | 除现有 config/C ABI 外，覆盖媒体码流/模型元数据等不可信解析面；CI 至少执行 `cargo fuzz check` | MEDIA-01 |
 | DEMO-01 | 未开始 | 无硬件多路流多算法综合 demo | `mock://` 多路输入经 decode/resize/inference/track/osd/push 跑通，CLI 集成测试验证，并记录 planned copy count | APP-01、MEDIA-02 |
 | DOC-01 | 未开始 | 最终文档与状态收敛 | README/user guide/design 与实际字段、feature、示例、限制一致；删除“已完成”但无实现的陈述 | 其他软件任务 |
+
+> OBS-01 说明：`dg-graph` 在 `ElementIo` 收发和 bounded pipe 背压路径采集每节点指标，运行报告提供快照并通过 `MetricsSink` 保留后续 Prometheus 导出接口。
 
 ## E. 需要真实硬件或自托管 runner 的最终验收
 

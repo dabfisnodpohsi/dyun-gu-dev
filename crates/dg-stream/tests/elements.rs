@@ -472,3 +472,66 @@ fn end_to_end_pull_push_pipeline() {
     assert_eq!(received[2].meta.pts, Some(80));
     assert_eq!(received[2].buffer.read_bytes(), b"delta2");
 }
+
+#[test]
+fn stream_push_counts_policy_drops_in_element_metrics() {
+    let hub = MemoryStreamHub::global();
+    let in_url = "mock://metrics/in";
+    let out_url = "mock://metrics/out";
+    let track = h264_track(TrackReadiness::Ready, h264_extradata());
+    let publisher = hub
+        .publish(in_url, PublisherOptions::default())
+        .expect("publish input");
+    publisher
+        .update_tracks(vec![track.clone()])
+        .expect("input tracks");
+    let _out_subscriber = hub
+        .subscribe(
+            out_url,
+            subscriber_options(1, BackpressurePolicy::DropUntilNextKeyframe),
+        )
+        .expect("subscribe output");
+
+    let feeder = thread::spawn(move || {
+        while MemoryStreamHub::global().subscriber_count(in_url) == 0 {
+            thread::sleep(Duration::from_millis(2));
+        }
+        publisher.push_frame(video_frame(0, true, b"key")).unwrap();
+        publisher
+            .push_frame(video_frame(40, false, b"delta"))
+            .unwrap();
+        publisher.close().unwrap();
+    });
+
+    let spec = GraphSpecBuilder::new()
+        .add_node(node(
+            "src",
+            "rtsp_src",
+            serde_json::json!({ "url": in_url }),
+        ))
+        .add_node(node(
+            "sink",
+            "rtmp_sink",
+            serde_json::json!({
+                "url": out_url,
+                "tracks": serde_json::to_value(vec![track]).unwrap(),
+            }),
+        ))
+        .connect("src.out -> sink.in")
+        .build()
+        .expect("spec");
+    let report = Graph::new(spec)
+        .expect("graph")
+        .run()
+        .expect("pipeline run");
+    feeder.join().expect("feeder");
+
+    assert!(
+        report
+            .element_metrics
+            .get("sink")
+            .expect("sink metrics")
+            .drop_count
+            > 0
+    );
+}

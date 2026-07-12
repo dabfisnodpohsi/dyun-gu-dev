@@ -39,6 +39,29 @@ typedef enum DgGraphFormat {
 } DgGraphFormat;
 
 /**
+ * Backend family for direct backend lifecycle operations.
+ */
+typedef enum DgBackendKind {
+  Mock = 0,
+  OpenVino = 1,
+  Rknn = 2,
+  TensorRt = 3,
+  Sophon = 4,
+} DgBackendKind;
+
+/**
+ * Logical device family.
+ */
+typedef enum DgDeviceKind {
+  Cpu = 0,
+  IntelGpu = 1,
+  IntelNpu = 2,
+  CudaGpu = 3,
+  RknnNpu = 4,
+  SophonTpu = 5,
+} DgDeviceKind;
+
+/**
  * Supported tensor element types.
  */
 typedef enum DgDataType {
@@ -75,18 +98,6 @@ typedef enum DgDataFormat {
 } DgDataFormat;
 
 /**
- * Logical device family.
- */
-typedef enum DgDeviceKind {
-  Cpu = 0,
-  IntelGpu = 1,
-  IntelNpu = 2,
-  CudaGpu = 3,
-  RknnNpu = 4,
-  SophonTpu = 5,
-} DgDeviceKind;
-
-/**
  * Imported external memory domain.
  */
 typedef enum DgMemoryDomain {
@@ -99,6 +110,11 @@ typedef enum DgMemoryDomain {
   SophonDevice = 6,
   Opaque = 7,
 } DgMemoryDomain;
+
+/**
+ * Opaque direct inference backend handle.
+ */
+typedef struct DgBackend DgBackend;
 
 /**
  * Opaque buffer handle.
@@ -114,6 +130,27 @@ typedef struct DgEngine DgEngine;
  * Opaque tensor handle.
  */
 typedef struct DgTensor DgTensor;
+
+/**
+ * Runtime capabilities returned by a direct backend.
+ */
+typedef struct DgBackendCapabilities {
+  size_t device_count;
+  enum DgDeviceKind devices[8];
+  size_t precision_count;
+  enum DgDataType precisions[16];
+} DgBackendCapabilities;
+
+/**
+ * Fixed-size tensor metadata returned by direct backend queries.
+ */
+typedef struct DgTensorInfo {
+  enum DgDataType dtype;
+  enum DgDataFormat format;
+  enum DgDeviceKind device;
+  size_t rank;
+  size_t shape[8];
+} DgTensorInfo;
 
 /**
  * Returns the most recent error for the calling thread.
@@ -220,6 +257,51 @@ enum DgStatus dg_engine_build(struct DgEngine *engine);
  * Runs the built graph with pending inputs and stores sink outputs for polling.
  */
 enum DgStatus dg_engine_run(struct DgEngine *engine);
+
+/**
+ * Creates and initializes a backend without constructing a graph.
+ */
+enum DgStatus dg_backend_create(enum DgBackendKind kind,
+                                const uint8_t *model_data,
+                                size_t model_length,
+                                const char *options_json,
+                                struct DgBackend **out);
+
+/**
+ * Frees a direct backend handle. Null is accepted.
+ */
+void dg_backend_free(struct DgBackend *backend);
+
+/**
+ * Returns the number of backend inputs and outputs.
+ */
+enum DgStatus dg_backend_io_counts(const struct DgBackend *backend,
+                                   size_t *out_inputs,
+                                   size_t *out_outputs);
+
+/**
+ * Queries runtime device and precision capabilities.
+ */
+enum DgStatus dg_backend_capabilities(const struct DgBackend *backend,
+                                      struct DgBackendCapabilities *out);
+
+/**
+ * Queries one input or output tensor description.
+ */
+enum DgStatus dg_backend_tensor_info(const struct DgBackend *backend,
+                                     bool output,
+                                     size_t index,
+                                     struct DgTensorInfo *out);
+
+/**
+ * Runs direct backend inference over caller-owned tensor handles.
+ */
+enum DgStatus dg_backend_run(struct DgBackend *backend,
+                             const struct DgTensor *const *inputs,
+                             size_t input_count,
+                             struct DgTensor **outputs,
+                             size_t output_capacity,
+                             size_t *out_count);
 
 /**
  * Creates a host tensor from a caller-owned byte array.

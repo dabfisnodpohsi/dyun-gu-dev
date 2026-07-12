@@ -162,20 +162,21 @@ fn share_avcodec_handle(
     device: DeviceKind,
     domain: MemoryDomain,
 ) -> Result<Buffer> {
-    let bytes = handle
-        .host_bytes()
-        .map_or_else(|| vec![0; handle.size()], <[u8]>::to_vec);
     let external = avcodec_external_handle_to_core(handle.external());
     let keepalive = handle.clone();
     let guard = ExternalDropGuard::new(move || drop(keepalive));
-    Buffer::from_external(
-        device,
-        domain,
-        BufferDesc::new(handle.size(), 1),
-        external,
-        bytes,
-        guard,
-    )
+    let desc = BufferDesc::new(handle.size(), 1);
+    match handle.host_bytes() {
+        Some(bytes) => Buffer::from_external_with_host_bytes(
+            device,
+            domain,
+            desc,
+            external,
+            bytes.to_vec(),
+            guard,
+        ),
+        None => Buffer::from_external(device, domain, desc, external, guard),
+    }
 }
 
 #[cfg(feature = "avcodec")]
@@ -196,7 +197,7 @@ pub fn avcodec_handle_to_buffer(
 pub fn buffer_to_avcodec_handle(buffer: &Buffer) -> Result<dg_media_avcodec::BufferHandle> {
     Ok(dg_media_avcodec::BufferHandle::from_host_bytes(
         0,
-        buffer.read_bytes(),
+        buffer.try_read_bytes()?,
     ))
 }
 
@@ -551,7 +552,7 @@ mod tests {
         let guard = dg_core::ExternalDropGuard::new(move || {
             flag.fetch_add(1, Ordering::SeqCst);
         });
-        let buffer = dg_core::Buffer::from_external(
+        let buffer = dg_core::Buffer::from_external_with_host_bytes(
             DeviceKind::Cpu,
             dg_core::MemoryDomain::DmaBuf,
             dg_core::BufferDesc::new(4, 1),

@@ -1393,6 +1393,7 @@ dependencies = [
  "dg-core",
  "dg-graph",
  "dg-media",
+ "dg-runtime",
  "dg-stream",
  "serde_json",
 ]
