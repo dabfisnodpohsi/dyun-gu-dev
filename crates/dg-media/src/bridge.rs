@@ -3,7 +3,9 @@ use std::sync::Arc;
 use dg_core::{Buffer, DataFormat, DataType, DeviceKind, MemoryDomain, Result, Tensor};
 use dg_graph::{Packet, PacketPayload};
 
-use crate::{MediaFrame, MediaFrameKind};
+#[cfg(feature = "avcodec")]
+use crate::{CopyPath, TransferMode};
+use crate::{MediaFrame, MediaFrameKind, TransferReport};
 
 #[cfg(feature = "avcodec")]
 use dg_core::{BufferDesc, ExternalDropGuard};
@@ -11,7 +13,9 @@ use dg_core::{BufferDesc, ExternalDropGuard};
 use tracing::debug;
 
 #[cfg(feature = "avcodec")]
-use crate::CopyPath;
+use crate::ZeroCopyPlanner;
+#[cfg(feature = "avcodec")]
+use crate::{FrameLayout, FrameTransferRequest, HandleKind, MemoryDtype, MemoryFormat};
 
 pub fn tensor_to_frame(tensor: Tensor) -> MediaFrame {
     MediaFrame::from_tensor(tensor)
@@ -70,6 +74,35 @@ pub fn media_frame_to_graph_packet(frame: MediaFrame) -> Result<Packet> {
     Ok(Packet::tensor(frame.into_tensor()?))
 }
 
+/// A bridged value together with the transfer actually used to produce it.
+#[derive(Clone, Debug)]
+pub struct BridgedMediaFrame {
+    pub frame: MediaFrame,
+    pub transfer: TransferReport,
+}
+
+#[cfg(feature = "avcodec")]
+fn staged_host_transfer(source_domain: MemoryDomain) -> TransferReport {
+    staged_host_transfer_with_copies(source_domain, 1)
+}
+
+#[cfg(feature = "avcodec")]
+fn staged_host_transfer_with_copies(
+    source_domain: MemoryDomain,
+    copy_count: usize,
+) -> TransferReport {
+    TransferReport {
+        source_domain,
+        target_domain: MemoryDomain::Host,
+        path: CopyPath {
+            domains: vec![source_domain, MemoryDomain::Host],
+            copy_count,
+        },
+        copy_count,
+        mode: TransferMode::Staged,
+    }
+}
+
 /// Result of importing an avcodec [`dg_media_avcodec::BufferHandle`] into a
 /// dg-core [`Buffer`], with the actual transfer path taken.
 #[cfg(feature = "avcodec")]
@@ -78,6 +111,7 @@ pub struct ImportedBuffer {
     pub buffer: Buffer,
     pub zero_copy: bool,
     pub path: CopyPath,
+    pub transfer: TransferReport,
 }
 
 /// Imports an avcodec buffer handle into a dg-core [`Buffer`] targeting
@@ -102,15 +136,28 @@ pub fn import_avcodec_handle(
     target_domain: MemoryDomain,
 ) -> Result<ImportedBuffer> {
     let source_domain = avcodec_memory_domain_to_core(handle.domain());
-    let (buffer, path) = if source_domain == target_domain {
-        let buffer = share_avcodec_handle(handle, device, source_domain)?;
-        (
-            buffer,
-            CopyPath {
-                domains: vec![source_domain],
-                copy_count: 0,
-            },
-        )
+    let layout = FrameLayout {
+        dims: vec![handle.size()],
+        format: MemoryFormat::Packet,
+        dtype: MemoryDtype::U8,
+        plane_count: 1,
+        strides: vec![handle.size()],
+        subsampling: None,
+        packed: true,
+    };
+    let transfer = ZeroCopyPlanner::new().plan_frame(&FrameTransferRequest {
+        source_domain,
+        target_domain,
+        source_handle: HandleKind::Avcodec,
+        target_handle: HandleKind::External,
+        source_layout: layout.clone(),
+        target_layout: layout,
+        has_lifetime_guard: true,
+        staging_supported: source_domain != target_domain,
+        operation: format!("avcodec handle {}", handle.id()),
+    })?;
+    let buffer = if transfer.mode == TransferMode::Shared {
+        share_avcodec_handle(handle, device, source_domain)?
     } else {
         let staged = handle
             .stage_to(core_memory_domain_to_avcodec(target_domain), handle.id())
@@ -124,29 +171,22 @@ pub fn import_avcodec_handle(
                     handle.id()
                 )),
             })?;
-        let buffer = share_avcodec_handle(&staged, device, target_domain)?;
-        (
-            buffer,
-            CopyPath {
-                domains: vec![source_domain, target_domain],
-                copy_count: 1,
-            },
-        )
+        share_avcodec_handle(&staged, device, target_domain)?
     };
-    let zero_copy = path.copy_count == 0;
     debug!(
         handle_id = handle.id(),
         source_domain = ?source_domain,
         target_domain = ?target_domain,
-        copy_count = path.copy_count,
-        zero_copy,
-        path = ?path.domains,
+        copy_count = transfer.copy_count,
+        zero_copy = transfer.mode == TransferMode::Shared,
+        path = ?transfer.path.domains,
         "imported avcodec buffer handle"
     );
     Ok(ImportedBuffer {
         buffer,
-        zero_copy,
-        path,
+        zero_copy: transfer.mode == TransferMode::Shared,
+        path: transfer.path.clone(),
+        transfer,
     })
 }
 
@@ -203,6 +243,13 @@ pub fn buffer_to_avcodec_handle(buffer: &Buffer) -> Result<dg_media_avcodec::Buf
 
 #[cfg(feature = "avcodec")]
 pub fn avcodec_packet_to_media_frame(packet: &dg_media_avcodec::Packet) -> Result<MediaFrame> {
+    Ok(avcodec_packet_to_media_frame_with_transfer(packet)?.frame)
+}
+
+#[cfg(feature = "avcodec")]
+pub fn avcodec_packet_to_media_frame_with_transfer(
+    packet: &dg_media_avcodec::Packet,
+) -> Result<BridgedMediaFrame> {
     let bytes = packet.host_bytes().map_or_else(
         |_| Vec::new(),
         |bytes| bytes.map_or_else(Vec::new, |slice| slice.to_vec()),
@@ -218,7 +265,10 @@ pub fn avcodec_packet_to_media_frame(packet: &dg_media_avcodec::Packet) -> Resul
     )?;
     frame.meta.pts = packet.pts;
     frame.meta.dts = packet.dts;
-    Ok(frame)
+    Ok(BridgedMediaFrame {
+        frame,
+        transfer: staged_host_transfer(avcodec_memory_domain_to_core(packet.data.handle.domain())),
+    })
 }
 
 #[cfg(feature = "avcodec")]
@@ -228,9 +278,23 @@ pub fn media_frame_to_avcodec_packet(
     codec: dg_media_avcodec::CodecId,
     bitstream_format: dg_media_avcodec::BitstreamFormat,
 ) -> Result<dg_media_avcodec::Packet> {
+    Ok(
+        media_frame_to_avcodec_packet_with_transfer(frame, stream_index, codec, bitstream_format)?
+            .0,
+    )
+}
+
+#[cfg(feature = "avcodec")]
+pub fn media_frame_to_avcodec_packet_with_transfer(
+    frame: MediaFrame,
+    stream_index: u32,
+    codec: dg_media_avcodec::CodecId,
+    bitstream_format: dg_media_avcodec::BitstreamFormat,
+) -> Result<(dg_media_avcodec::Packet, TransferReport)> {
     let pts = frame.meta.pts;
     let dts = frame.meta.dts;
-    let bytes = frame.buffer.into_host_bytes();
+    let source_domain = frame.domain;
+    let bytes = frame.buffer.try_read_bytes()?;
     let mut packet = dg_media_avcodec::Packet::from_host_bytes(
         u64::from(stream_index),
         codec,
@@ -239,19 +303,20 @@ pub fn media_frame_to_avcodec_packet(
     );
     packet.pts = pts;
     packet.dts = dts;
-    Ok(packet)
+    Ok((packet, staged_host_transfer(source_domain)))
 }
 
 #[cfg(feature = "avcodec")]
 pub fn avcodec_image_to_media_frame(image: &dg_media_avcodec::Image) -> Result<MediaFrame> {
-    avcodec_image_to_media_frame_with_processor(image, None)
+    Ok(avcodec_image_to_media_frame_with_processor(image, None)?.frame)
 }
 
 #[cfg(feature = "avcodec")]
 pub(crate) fn avcodec_image_to_media_frame_with_processor(
     image: &dg_media_avcodec::Image,
     csc_processor: Option<&mut dyn dg_media_avcodec::ImageProcessor>,
-) -> Result<MediaFrame> {
+) -> Result<BridgedMediaFrame> {
+    let requires_csc = image.format == dg_media_avcodec::ImageInfo::Yuv420p;
     let image = if image.format == dg_media_avcodec::ImageInfo::Yuv420p {
         let mut owned_processor;
         let processor = if let Some(processor) = csc_processor {
@@ -293,6 +358,11 @@ pub(crate) fn avcodec_image_to_media_frame_with_processor(
     } else {
         image.clone()
     };
+    if image.plane_count > 1 {
+        return Err(dg_core::Error::Unsupported(
+            "avcodec multi-plane image requires an explicit plane bridge".to_string(),
+        ));
+    }
 
     let host = if let Some(bytes) = image
         .plane_host_bytes(0)
@@ -319,6 +389,18 @@ pub(crate) fn avcodec_image_to_media_frame_with_processor(
             )))
         }
     };
+    if let Some(plane) = image.planes[0] {
+        let packed_stride = usize::try_from(image.coded_width)
+            .ok()
+            .and_then(|width| width.checked_mul(channels))
+            .ok_or_else(|| dg_core::Error::Media("image stride overflow".to_string()))?;
+        if plane.stride != packed_stride {
+            return Err(dg_core::Error::Unsupported(format!(
+                "avcodec padded stride {} requires an explicit image bridge (packed stride {})",
+                plane.stride, packed_stride
+            )));
+        }
+    }
     let mut frame = MediaFrame::from_host_bytes(
         MediaFrameKind::Image,
         DataType::U8,
@@ -335,7 +417,13 @@ pub(crate) fn avcodec_image_to_media_frame_with_processor(
     )?;
     frame.meta.pts = image.pts;
     frame.meta.dts = image.dts;
-    Ok(frame)
+    Ok(BridgedMediaFrame {
+        frame,
+        transfer: staged_host_transfer_with_copies(
+            avcodec_memory_domain_to_core(image.memory.domain()),
+            if requires_csc { 2 } else { 1 },
+        ),
+    })
 }
 
 #[cfg(feature = "avcodec")]
@@ -343,8 +431,17 @@ pub fn media_frame_to_avcodec_image(
     frame: MediaFrame,
     stride_alignment: usize,
 ) -> Result<dg_media_avcodec::Image> {
+    Ok(media_frame_to_avcodec_image_with_transfer(frame, stride_alignment)?.0)
+}
+
+#[cfg(feature = "avcodec")]
+pub fn media_frame_to_avcodec_image_with_transfer(
+    frame: MediaFrame,
+    stride_alignment: usize,
+) -> Result<(dg_media_avcodec::Image, TransferReport)> {
     let pts = frame.meta.pts;
     let dts = frame.meta.dts;
+    let source_domain = frame.domain;
     let height = *frame
         .shape
         .first()
@@ -379,7 +476,7 @@ pub fn media_frame_to_avcodec_image(
     let stride = width
         .checked_mul(bytes_per_pixel)
         .ok_or_else(|| dg_core::Error::Media("image stride overflow".to_string()))?;
-    let bytes = frame.buffer.into_host_bytes();
+    let bytes = frame.buffer.try_read_bytes()?;
     let mut image = dg_media_avcodec::Image::new_host_packed(
         format,
         coded_width,
@@ -392,7 +489,7 @@ pub fn media_frame_to_avcodec_image(
     .map_err(|err| dg_core::Error::Buffer(format!("{err:?}")))?;
     image.pts = pts;
     image.dts = dts;
-    Ok(image)
+    Ok((image, staged_host_transfer(source_domain)))
 }
 
 #[cfg(feature = "avcodec")]

@@ -356,7 +356,7 @@ impl DecodeCore {
                     .as_mut()
                     .map(|processor| processor.as_mut() as &mut dyn ImageProcessor);
                 Ok(crate::ops::MediaPoll::Ready(
-                    avcodec_image_to_media_frame_with_processor(&image, processor)?,
+                    avcodec_image_to_media_frame_with_processor(&image, processor)?.frame,
                 ))
             }
             Ok(Poll::Pending) => Ok(crate::ops::MediaPoll::Pending),

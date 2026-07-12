@@ -83,6 +83,13 @@ impl From<dg_stream_cheetah::DispatchResult> for DispatchResult {
 
 #[cfg(feature = "cheetah")]
 pub fn cheetah_avframe_to_media_frame(frame: Arc<dg_stream_cheetah::AVFrame>) -> MediaFrame {
+    cheetah_avframe_to_media_frame_with_transfer(frame).frame
+}
+
+#[cfg(feature = "cheetah")]
+pub fn cheetah_avframe_to_media_frame_with_transfer(
+    frame: Arc<dg_stream_cheetah::AVFrame>,
+) -> dg_media::BridgedMediaFrame {
     let frame = frame.as_ref();
     let bytes = frame.payload.clone().to_vec();
     let kind = match frame.media_kind {
@@ -116,7 +123,19 @@ pub fn cheetah_avframe_to_media_frame(frame: Arc<dg_stream_cheetah::AVFrame>) ->
     media_frame.meta.dts = Some(frame.dts);
     media_frame.meta.stream_id = Some(u64::from(frame.track_id.0).to_string());
     media_frame.meta.stream_metadata = Some(cheetah_frame_metadata(frame));
-    media_frame
+    dg_media::BridgedMediaFrame {
+        frame: media_frame,
+        transfer: dg_media::TransferReport {
+            source_domain: dg_core::MemoryDomain::Opaque,
+            target_domain: dg_core::MemoryDomain::Host,
+            path: dg_media::CopyPath {
+                domains: vec![dg_core::MemoryDomain::Opaque, dg_core::MemoryDomain::Host],
+                copy_count: 1,
+            },
+            copy_count: 1,
+            mode: dg_media::TransferMode::Staged,
+        },
+    }
 }
 
 #[cfg(feature = "cheetah")]
@@ -124,11 +143,20 @@ pub fn media_frame_to_cheetah_avframe(
     frame: Arc<MediaFrame>,
     metadata: MediaStreamMetadata,
 ) -> Result<dg_stream_cheetah::AVFrame> {
+    Ok(media_frame_to_cheetah_avframe_with_transfer(frame, metadata)?.0)
+}
+
+#[cfg(feature = "cheetah")]
+pub fn media_frame_to_cheetah_avframe_with_transfer(
+    frame: Arc<MediaFrame>,
+    metadata: MediaStreamMetadata,
+) -> Result<(dg_stream_cheetah::AVFrame, dg_media::TransferReport)> {
     let frame = match Arc::try_unwrap(frame) {
         Ok(frame) => frame,
         Err(frame) => frame.as_ref().clone(),
     };
-    let payload = Bytes::from(frame.buffer.into_host_bytes());
+    let source_domain = frame.domain;
+    let payload = Bytes::from(frame.buffer.try_read_bytes()?);
     let track_id = u32::try_from(metadata.track_id).map_err(|_| {
         Error::InvalidArgument(format!(
             "stream metadata track id {} exceeds cheetah TrackId range",
@@ -148,7 +176,19 @@ pub fn media_frame_to_cheetah_avframe(
     if metadata.keyframe {
         avframe.flags.insert(dg_stream_cheetah::FrameFlags::KEY);
     }
-    Ok(avframe)
+    Ok((
+        avframe,
+        dg_media::TransferReport {
+            source_domain,
+            target_domain: dg_core::MemoryDomain::Host,
+            path: dg_media::CopyPath {
+                domains: vec![source_domain, dg_core::MemoryDomain::Host],
+                copy_count: 1,
+            },
+            copy_count: 1,
+            mode: dg_media::TransferMode::Staged,
+        },
+    ))
 }
 
 #[cfg(feature = "cheetah")]
@@ -435,7 +475,10 @@ impl SubscriberSource for CheetahSubscriberSourceAdapter {
             .recv()
             .await
             .map_err(|err| Error::Sdk(err.to_string()))?;
-        Ok(next.map(|frame| Arc::new(cheetah_avframe_to_media_frame(frame))))
+        Ok(next.map(|frame| {
+            let bridged = cheetah_avframe_to_media_frame_with_transfer(frame);
+            Arc::new(bridged.frame)
+        }))
     }
 
     async fn close(&mut self) -> Result<()> {
