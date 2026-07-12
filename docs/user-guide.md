@@ -34,6 +34,19 @@ cargo run -p dg-cli -- run --watch --config graph.yaml
 校验的变更会被拒绝并报告错误，上一份有效配置继续保持活动状态。进程可用
 Ctrl-C 终止监控。
 
+无硬件的多路媒体示例可直接运行：
+
+```bash
+cargo run -p dg-cli -- demo --config examples/mock-multi-stream-demo.yaml
+```
+
+该 demo 向两个 `mock://` 输入发布合成的录制式 RGB 帧，经
+`media_decode`、`media_resize`、mock inference、`bytetrack`、`media_osd`、
+`media_encode` 和 `rtmp_sink` 处理后写入两个 `mock://` 输出。输出中的
+`planned copy count` 来自 `ZeroCopyPlanner` 的 `TransferReport`，不是预设常数。
+默认 `media_decode` 只校验并 relabel 录制的原始帧 payload；它不会在未启用
+可选 codec feature 时解析 JPEG/H.264 等压缩码流。
+
 ## 3. GraphSpec
 
 配置支持 YAML、JSON 和 TOML。最小 YAML：
@@ -178,11 +191,11 @@ cargo run -p dg-cli --features sophon -- run --config graph.yaml
 导入、同内存域共享和跨域 staging fallback。
 
 启用 `dg-media` 的 `avcodec` feature 后，`media_decode` 与 `media_encode` 通过
-avcodec-rs `RegistryBuilder` 使用纯 Rust JPEG/MJPEG 软件 codec，`media_resize`
-通过纯 Rust zune `ImageProcessor` 执行；`media_osd` 始终使用本地实现。解码器和
-编码器的可选 `codec` 参数为 `jpeg` 或 `mjpeg`，默认是 `jpeg`。该 feature 不启用
-FFmpeg、厂商 SDK、系统 codec library 或 native build tool，默认 feature 仍关闭
-avcodec，继续使用原有 synthetic Sans-I/O cores。
+avcodec-rs `RegistryBuilder` 使用已编译的 codec backend；默认的可选 backend 是
+纯 Rust JPEG/MJPEG 软件 codec，`media_resize` 通过纯 Rust zune `ImageProcessor`
+执行，`media_osd` 始终使用本地实现。`codec` 参数为 `jpeg` 或 `mjpeg` 时可走
+该 SDK-free 路径；H.264 及硬件 codec 还需要对应的 codec feature 和运行时依赖。
+默认 `dg-media` feature 仍关闭 `avcodec`，继续使用原有 synthetic Sans-I/O cores。
 
 `dg-stream` 注册 `rtsp_src`、`httpflv_src`、`rtmp_sink`、`webrtc_sink`。
 `mock://` URL 使用进程内 `MemoryStreamHub`，适合确定性测试；真实协议 URL 通过
@@ -237,8 +250,10 @@ RUST_LOG=dg_graph=debug cargo run -p dg-cli -- -vv run \
   --config examples/mock-multi-algorithm.yaml
 ```
 
-零拷贝路径应记录内存域、实际传输路径和拷贝次数。若内存域不兼容，框架会显式
-走 staging fallback；日志中的“可编译/已规划”不等于已在目标硬件验证。
+只有同时满足内存域、目标可消费句柄、完整布局和外部资源生命周期 guard
+条件时，planner 才会报告 `Shared`；否则报告显式 `Staged` 路径和 copy count，
+或返回 `Unsupported`。因此 host staging 不会被记录成 zero-copy；日志中的
+“可编译/已规划”也不等于已在目标硬件验证。
 
 仓库 CI 覆盖无 SDK 的四目标编译、mock/录制数据测试和供应链检查。RKNN、
 TensorRT、Sophon 真实执行、硬件编解码以及端到端零拷贝吞吐仍需对应板卡/GPU

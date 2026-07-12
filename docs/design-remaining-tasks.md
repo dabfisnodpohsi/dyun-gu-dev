@@ -62,7 +62,7 @@
 | SCH-01 | 已完成 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
 | SCH-02 | 已完成 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
 | MEM-01 | 已完成 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
-| MEM-02 | 未开始 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
+| MEM-02 | 已完成 | 各后端 external-buffer zero-copy 入口 | 各 backend 的 external-buffer/zero-copy 能力入口与不兼容时的 staging/copy-count 诊断已具备；具体设备上的实测验收仍属于 HW-* | MEM-01、RT-02 |
 | CAPI-01 | 已完成 | C ABI 后端直接生命周期与能力接口 | `DgBackend` 提供直接创建/初始化、输入输出能力查询、mock 推理运行与销毁；cbindgen 头文件、Rust FFI 测试和 `direct_backend.c` 示例同步更新 | RT-01、RT-02 |
 
 > SYS-01 说明：社区 `openvino` crate 的 FFI/link 依赖已隔离到
@@ -181,13 +181,30 @@
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
 | OBS-01 | 已完成 | element 运行指标 | 每节点输出吞吐、处理时延、队列深度、drop/backpressure 计数；结构化 tracing 可测试，保留后续 Prometheus 接口 | 无 |
-| TEST-01 | 已完成 | 精度回归 harness | 固定输入/参考输出、余弦相似度阈值、可复用 backend runner；mock 与 OpenVINO 进入通用 CI，硬件后端复用同一格式 | RT-02 |
+| TEST-01 | 已完成 | 精度回归 harness | 固定输入/参考输出、余弦相似度阈值、可复用 backend runner；mock/default path 进入通用 CI，需 SDK 的 backend 复用同一格式并在可用环境运行 | RT-02 |
 | TEST-02 | 未开始 | OpenVINO CPU 真实 CI | 安装/缓存 OpenVINO runtime，启用 backend feature，执行真实模型 load → infer → compare，并对 feature path clippy | SYS-01、TEST-01 |
-| TEST-03 | 已完成 | 补齐模型/码流 fuzz target | 除现有 config/C ABI 外，覆盖媒体码流/模型元数据等不可信解析面；CI 至少执行 `cargo fuzz check` | MEDIA-01 |
-| DEMO-01 | 未开始 | 无硬件多路流多算法综合 demo | `mock://` 多路输入经 decode/resize/inference/track/osd/push 跑通，CLI 集成测试验证，并记录 planned copy count | APP-01、MEDIA-02 |
-| DOC-01 | 未开始 | 最终文档与状态收敛 | README/user guide/design 与实际字段、feature、示例、限制一致；删除“已完成”但无实现的陈述 | 其他软件任务 |
+| TEST-03 | 已完成 | 补齐模型/码流 fuzz target | 除现有 config/C ABI 外，覆盖可达的 backend/model metadata 解析面；CI 至少执行 `cargo fuzz check`；默认构建没有独立的媒体容器解析器 | MEDIA-01 |
+| DEMO-01 | 已完成 | 无硬件多路流多算法综合 demo | `mock://` 多路输入经 decode/resize/inference/track/osd/push 跑通，CLI 集成测试验证，并记录 planned copy count | APP-01、MEDIA-02 |
+| DOC-01 | 已完成 | 最终文档与状态收敛 | README/user guide/design 与实际字段、feature、示例、限制一致；删除"已完成"但无实现的陈述 | 其他软件任务 |
 
 > OBS-01 说明：`dg-graph` 在 `ElementIo` 收发和 bounded pipe 背压路径采集每节点指标，运行报告提供快照并通过 `MetricsSink` 保留后续 Prometheus 导出接口。
+
+> DEMO-01 说明：`dg demo --config examples/mock-multi-stream-demo.yaml` 在无硬件
+> 默认构建中向两个 `mock://` 输入发布合成帧，分别经过 `media_decode`、
+> `media_resize`、YOLO mock inference、`bytetrack`、`media_osd` 与 `rtmp_sink`；
+> track 结果同时进入 SDK-free sink 以验证完整分支。demo 使用
+> `ZeroCopyPlanner::plan_frame` 以 Host 域、HostBytes 句柄和完整 RGB 布局计算
+> 输入帧传输的 `TransferReport`，CLI 输出实际的 planned copy count，而不是硬编码。
+
+> DOC-01 说明：
+> 已核对 README、用户指南、设计文档、示例和本表：GraphSpec 的实际字段别名、
+> CLI 的 `run`/`validate`/`demo`/`list-elements`/`schema` 子命令、Cargo feature
+> 默认值及示例路径均已对齐。文档明确区分默认 SDK-free 录制式 raw-frame
+> adapter 与可选 avcodec/cheetah 路径，说明 zero-copy 只有满足句柄、完整布局和
+> 生命周期条件时才成立，其余情况显式 staging 或 Unsupported 并记录 copy count；
+> OpenVINO 真实 SDK/CI 与 HW-* 验收仍保持外部阻塞。已完成状态仅保留在有代码和
+> 测试依据的任务，`TEST-02` 仍为 `未开始`，`HW-01` 至 `HW-04` 仍为外部阻塞，
+> `CFG-10` 仍为可选。
 
 ## E. 需要真实硬件或自托管 runner 的最终验收
 

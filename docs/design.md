@@ -1,6 +1,6 @@
 # dyun-gu-dev：Rust 多芯片推理框架 —— 技术方案与开发计划
 
-> 版本：v0.1（方案草案，待确认）
+> 版本：v0.1（方案与当前实现边界）
 > 目标：用 Rust 编写一个跨芯片、跨部署模式的流式推理框架，统一支持 **OpenVINO / TensorRT / RKNN2 / Sophon** 四类推理后端，覆盖多种数值精度、多种设备拓扑与负载均衡策略，并集成多媒体编解码与流媒体能力。
 
 ---
@@ -38,7 +38,7 @@
 | **ChungTak/DyunGuDeploy** | C++ (FastDeploy 体系) | **统一 RuntimeOption + Backend 开关 + serving/streamer** 的产品化组织 | `RuntimeOption` 统一入口；`ENABLE_*_BACKEND` 编译开关；`BaseBackend(Init/Infer/GetInputInfo...)`；`TensorInfo(name/shape/dtype)`；serving/streamer/多语言绑定分层 |
 | **RKNN2 (rknpu2 / rknn_model_zoo / doc)** | C | RKNN 后端适配的**API 流程/量化/多核**细节 | `rknn_init/query/inputs_set/run/outputs_get/destroy`；`rknn_tensor_attr(fmt/type/qnt_type/zp/scale/stride)`；`rknn_set_core_mask`（AUTO/0/1/2/0_1/0_1_2/ALL）；zero-copy `rknn_create_mem`/`rknn_set_io_mem`；`rknn_set_input_shapes` 动态 shape |
 
-**关键结论**：架构上以 **nndeploy 的运行时/后端/张量抽象** 为骨架，叠加 **sophon-stream 的流式 element/graph 编排层**，产品化组织参考 **DyunGuDeploy(FastDeploy)** 的 `RuntimeOption` 与后端开关，全部用 Rust 惯用法（trait + 泛型 + RAII + feature flag + `-sys` crate）重写。
+**关键结论**：架构上以 **nndeploy 的运行时/后端/张量抽象** 为骨架，叠加 **sophon-stream 的流式 element/graph 编排层**，产品化组织参考 **DyunGuDeploy(FastDeploy)** 的 `RuntimeOption` 与后端开关，全部用 Rust 惯用法（trait + 泛型 + RAII + feature flag + `-sys` crate）重写。本文同时标注当前 SDK-free 默认路径与仍需外部 SDK/硬件验证的设计目标；设计目标不等于默认构建已经提供该能力。
 
 ---
 
@@ -49,7 +49,7 @@
 - `TimothyWalker6922/avcodec-rs-develop`（多媒体编解码 + 图像处理）—— 见 §9.1。
 - `ChungTak/cheetah-media-server-rs-dev`（流媒体服务器/协议平台）—— 见 §9.2。
 
-**关键发现（影响设计）**：两者各自维护**不同的媒体数据模型**——avcodec 用 `Image / Packet / BufferHandle / MemoryDomain`，cheetah 用自有 `cheetah-codec` 的 `AVFrame / TrackInfo / CodecId`，**cheetah 不复用 avcodec**。因此 dg-media 与 dg-stream 之间需要一层**帧模型桥接（frame bridge）**：把 cheetah 的 `AVFrame` 与 avcodec 的 `Image/Packet`、以及 dg-core 的 `Frame/Tensor` 三者互转（尽量共享底层 buffer 走 zero-copy，必要时 staging 拷贝）。这是 dg-media/dg-stream 的核心工程点，已纳入 §9 与 M5。
+**关键发现（影响设计）**：两者各自维护**不同的媒体数据模型**——avcodec 用 `Image / Packet / BufferHandle / MemoryDomain`，cheetah 用自有 `cheetah-codec` 的 `AVFrame / TrackInfo / CodecId`，**cheetah 不复用 avcodec**。因此 dg-media 与 dg-stream 之间需要一层**帧模型桥接（frame bridge）**：把 cheetah 的 `AVFrame` 与 avcodec 的 `Image/Packet`、以及 dg-core 的 `Frame/Tensor` 三者互转；是否共享由句柄、布局和生命周期条件决定，不满足时必须显式 staging。这是 dg-media/dg-stream 的核心工程点，已纳入 §9 与 M5。
 
 仍保留 **trait 边界隔离 + adapter crate** 的策略：dg-media/dg-stream 只依赖框架内 trait，具体实现指向这两个 crate，可替换/可后置。
 
@@ -188,7 +188,7 @@ pub trait InferBackend: Send {
 > ✅ 明确支持；⚠️ 视 SDK 版本/芯片型号而定，需运行期能力探测；❌ 暂不支持。框架**统一表达所有类型**，实际可用性由“后端能力查询（capability query）”在 `init` 时校验并给出清晰报错，而非静默失败。
 
 ### 6.5 端到端零拷贝（硬件对象直连推理，重点）
-目标：**从 dg-media（avcodec-rs）的硬件解码/图像处理输出，直接喂入推理后端，全程不经过 CPU 拷贝**。
+目标：在满足硬件句柄、布局和生命周期条件时，从 dg-media（avcodec-rs）的硬件解码/图像处理输出直接喂入推理后端；不兼容时必须显式经过 CPU staging，不能把设计目标当作普遍保证。
 
 设计要点：
 - **统一 buffer 句柄贯穿全链路**：dg-core `Buffer` 记录 `MemoryType` 与底层句柄（`DmaBuf fd` / `DrmPrime` / `VaapiSurface` / `CudaDevicePtr` / `MppBuffer` / Sophon device addr）。avcodec 的 `MemoryDomain` / `BufferHandle` 与之一一映射，导入时**共享而非复制**（`Buffer::from_external`，用 `ExternalDropGuard` 托管生命周期与引用计数）。
@@ -198,7 +198,7 @@ pub trait InferBackend: Send {
   - TensorRT：NVDEC/`cuvid` 输出的 CUDA device ptr 直接作为绑定输入（同一 CUDA context/stream）；
   - OpenVINO：`remote tensor`（VA-API/GPU surface）或 host zero-copy `ov::Tensor(ptr)`。
 - **前处理融合**：resize/csc/normalize 尽量用硬件（RGA/bmcv/VPP/libyuv）在设备侧完成，输出直接是后端期望的 layout/dtype，避免“解码→CPU→前处理→CPU→推理”的多次搬运。
-- **兜底 staging**：当源内存域与目标后端不兼容（跨卡、跨异构设备）时，才走 avcodec 的 `StageHook` 显式 staging；框架据能力探测**自动选择 zero-copy 或 staging 路径**，并在日志中标注实际路径与拷贝次数，便于性能诊断。
+- **传输规划**：只有源/目标域兼容、目标可消费句柄、完整布局（维度/格式/dtype/平面/stride/采样/packed）一致且有 `ExternalDropGuard` 生命周期证据时，`ZeroCopyPlanner` 才报告 `Shared`。否则走显式 staging 并由 `TransferReport`/`CopyPath` 记录路径与 copy count，或返回 `Unsupported`；host staging 不会被标记为 zero-copy。
 - **约束**：zero-copy 要求 dg-media 解码器与推理后端**运行在同一物理设备/上下文**；调度器（§7）在做设备/核心分配时把“与解码同设备”作为亲和性偏好之一。
 
 ---
@@ -236,7 +236,7 @@ pub enum CoreSel { Auto, Single(u8), Mask(u32), All }   // 映射 RKNN core_mask
 - `ThreadPool`：work-stealing（`tryPush/tryPop/trySteal`），线程数与输入 DataPipe 数对应。
 
 ### 8.2 数据载荷
-- 帧对象 `Frame` / `ObjectMetadata`：携带 `channel_id`、图像 buffer（zero-copy 引用 device buffer）、张量、检测/跟踪结果等，沿链路传递（对齐 sophon-stream 的 `ObjectMetadata`）。
+- 当前 `MediaFrame`、Graph `Packet` 与 metadata 类型携带图像/张量 payload、流标识和检测/跟踪结果；兼容的底层句柄可共享，不兼容时由 bridge 显式 staging。统一的 `Frame`/`ObjectMetadata` 形态仍是跨后端演进目标。
 
 ### 8.3 配置模型（自研 schema，非直接对齐 engine.json）
 sophon-stream 的 `engine.json` 有明显不足：节点用魔法数字 `id`（5000/5001…）、`connections` 用 `src_id/src_port` 手工连线易错、无 schema 版本、无法表达可复用模板与参数化、不利于动态生成与热更新。本项目**设计更合理的配置模型**：
@@ -254,56 +254,48 @@ sophon-stream 的 `engine.json` 有明显不足：节点用魔法数字 `id`（5
 - **Builder API**：`GraphBuilder::new().add_node(...).connect(...).build()`；C ABI 侧同样暴露增删节点/连边接口。
 - **热更新**：Engine 支持 `apply(patch)` / `reload(spec)` —— 对运行中的 Graph 做**增量 diff**（新增/删除/替换节点与边、改参数），无需整体重启；对无法热改的节点走安全的局部 drain + rebuild。配置文件变更可选 `watch` 自动触发。
 
-**示例（YAML）**
+**示例（YAML；字段与当前 `GraphSpec` 对齐）**
 ```yaml
 apiVersion: dg/v1
 kind: Graph
-defaults: { device: { kind: OpenVino, id: 0 }, precision: fp16 }
-vars: { model_dir: /opt/models }
+defaults: { backend: mock, device: cpu, precision: f32 }
 nodes:
-  - name: cam0
-    type: rtsp_source
-    params: { url: "rtsp://..." }
-  - name: decode
-    type: decode
-    threads: 4
-    params: { hw: auto, zero_copy: true }
-  - name: yolo
-    type: yolov8
-    backend: openvino          # 覆盖 defaults；M4 起可切 rknn
-    precision: int8
-    params: { model: "${model_dir}/yolov8.xml" }
-  - name: track
-    type: bytetrack
-  - name: osd
-    type: osd
-  - name: enc
-    type: encode
-    sink: true
+  - name: source
+    kind: source
+    params: { count: 1, shape: [1, 4] }
+  - name: infer
+    kind: mock_inference
+    params: { shape: [1, 4], echo_inputs: true }
+  - name: sink
+    kind: sink
+    params: {}
 edges:
-  - cam0.out    -> decode.in
-  - decode.image-> yolo.image
-  - yolo.dets   -> track.dets
-  - track.out   -> osd.in
-  - osd.out     -> enc.in
+  - source.out -> infer.in
+  - infer.out -> sink.in
 ```
-源节点（source/decode）由应用层通过 `engine.push_input(channel_task)` 或直接由 stream source 驱动。
+当前实现同时兼容 `edges`/`connections` 与 `type`/`kind` 别名；实际媒体 demo
+使用已注册的 `rtsp_src`、`media_decode`、`media_resize`、`mock_inference`、
+`yolo_preprocess`、`yolo_postprocess`、`bytetrack`、`media_osd`、
+`media_encode` 和 `rtmp_sink`。源节点由 stream element 驱动，应用注入路径
+则使用 graph 的 input/source element。
 
 ### 8.4 内置 element（分批实现）
-- multimedia：`decode` / `encode` / `osd` / `resize`（走 dg-media）。
-- algorithm：`yolov5/8` / `resnet` / `bytetrack` / `ppocr` / `retinaface` …（走 dg-elements + dg-runtime）。
-- tools：`distributor`（分发）/ `converger`（汇聚）/ `filter` / `http_push`。
-- stream：`rtsp_pull` / `rtmp_push` / `webrtc`（走 dg-stream）。
+- multimedia：`media_decode` / `media_encode` / `media_osd` / `media_resize`（走 dg-media）。
+- algorithm：`yolo_preprocess` / `mock_inference` / `yolo_postprocess` /
+  `bytetrack` 以及其他已注册的算法和工具 element（走 dg-elements + dg-runtime）。
+- tools：`distributor` / `converger` / `filter` / `http_push`。
+- stream：`rtsp_src` / `httpflv_src` / `rtmp_sink` / `webrtc_sink`（走 dg-stream）；
+  `mock://` 由 SDK-free 的 `MemoryStreamHub` 提供。
 
 ---
 
 ## 9. 多媒体与流媒体集成
 
 ### 9.1 多媒体（dg-media，依赖 avcodec-rs-develop）
-avcodec-rs 是 Rust-first 媒体中台：core 层 Sans-I/O，`Decoder/Encoder/ImageProcessor/CaptureSource` trait + `Poll{Ready/Pending/EndOfStream}` 非阻塞模型 + `RegistryBuilder/Registry` 的**可解释后端选择**（capability 匹配 + preflight + trace），并有 `Image/Packet/BufferHandle/MemoryDomain(Host/DmaBuf/DrmPrime/Vaapi/Cuda/Mpp…)` 的 zero-copy + staging hook 抽象。
+avcodec-rs 是 Rust-first 媒体中台：core 层 Sans-I/O，`Decoder/Encoder/ImageProcessor/CaptureSource` trait + `Poll{Ready/Pending/EndOfStream}` 非阻塞模型 + `RegistryBuilder/Registry` 的**可解释后端选择**（capability 匹配 + preflight + trace），并有 `Image/Packet/BufferHandle/MemoryDomain(Host/DmaBuf/DrmPrime/Vaapi/Cuda/Mpp…)` 的共享与 staging 抽象。`dg-media` 默认 feature 不启用 avcodec；默认 `media_decode` 是 SDK-free 的录制式 raw-frame adapter，校验 payload 大小并 relabel 现有 buffer，不解析通用压缩码流。
 
-- **对接策略**：dg-media 直接走它的 **Rust API**（不走 `avrs_*` C ABI）——用 `RegistryBuilder` 注册所需 backend（`backend_ffmpeg` / `backend_rkmpp` / `backend_nvcodec` / `backend_libyuv` / `backend_video_device`），把它的 `Decoder/Encoder/ImageProcessor` 适配到 dg-media 的内置 element。
-- **精度/内存对齐**：avcodec 的 `MemoryDomain` 与 dg-core 的 `Device/Buffer` 对齐（DmaBuf/Mpp→RknnDevice、Cuda→CudaDevice…），解码输出尽量 zero-copy 直连推理前处理；跨域用它的 `StageHook` staging。
+- **对接策略**：启用 `avcodec` feature 时，dg-media 直接走它的 **Rust API**（不走 `avrs_*` C ABI），使用仓库配置的 `default_registry_builder()` 注册已启用 backend。默认可用的是纯 Rust JPEG/MJPEG、zune 和 libyuv 软件路径；FFmpeg、硬件 codec 与硬件 CSC 需要各自 feature 和外部运行时。
+- **精度/内存对齐**：avcodec 的 `MemoryDomain` 与 dg-core 的 `Device/Buffer` 通过 planner/bridge 对齐；兼容句柄与布局可共享，cheetah 的当前 Bytes payload 和其他不兼容路径显式 staging，并保留 transfer report。
 - **注意**：它的 FFmpeg 后端是 **codec-only**（libavcodec + swresample，非 libavformat 中心），解复用/封装能力有限——容器解复用主要由 dg-stream（cheetah）承担。
 - **错误归一化**：把 `AvError{Kind/Detail}` 映射到 dg-core `Error::Media`。
 
@@ -314,7 +306,7 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
   - 拉流 → 适配 `SubscriberSource`（`recv()->Arc<AVFrame>` / `close()`），经 `SubscriberApi::subscribe` / `StreamManagerApi::open_subscriber`；
   - 推流 → 适配 `PublisherSink`（`update_tracks` / `push_frame(Arc<AVFrame>)` / `close`），经 `PublisherApi::acquire_publisher` / `StreamManagerApi::open_publisher`；
   - 更底层协议桥接用 `CoreAdaptersApi`（`publish_frame/update_tracks/close_stream`）。
-- **frame bridge（关键）**：cheetah 的 `AVFrame` ↔ avcodec 的 `Image/Packet` ↔ dg-core `Frame/Tensor` 三者互转，尽量共享底层 buffer 走 zero-copy，跨内存域必要时 staging。这是 dg-media/dg-stream 的核心工程点。
+- **frame bridge（关键）**：cheetah 的 `AVFrame` ↔ avcodec 的 `Image/Packet` ↔ dg-core `Frame/Tensor` 三者互转；只有 planner 判定句柄、布局和生命周期均兼容时才共享底层 buffer。当前 cheetah Bytes adapter 使用明确的 host staging fallback，并通过 transfer report 暴露 copy count。
 - **部署形态**：首期以嵌入式库集成（拉流/推流 element）；后续可选把整个 dg-graph 引擎注册为 cheetah 的一个 `Module`，复用其 control/engine/module-manager 做服务化。
 
 ---
@@ -365,7 +357,7 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
 
 ### M1 — 运行时抽象 + 首个后端 OpenVINO（2 周）
 - `dg-runtime`：`InferBackend` trait、`RuntimeOption`、后端注册工厂、`ModelSource`；mock 后端供 CI。
-- **首个后端 OpenVINO**（x86 CPU 即可运行，CI 最友好）打通端到端。
+- **首个后端 OpenVINO**（目标为 x86 CPU 可运行；真实 SDK/CI 需要单独提供环境）打通端到端。
 - 交付：加载模型 → 单张推理 → 输出正确；后端能力查询 + 精度校验报错清晰。
 
 ### M2 — 图执行引擎 + 配置模型（2–2.5 周）
@@ -400,21 +392,25 @@ cheetah 是完整的 Rust 流媒体平台：协议**三段式 core / driver-toki
 
 ### 当前实现状态
 
-M0–M6 的基础骨架和默认/mock 软件路径已经落地，但设计尚未全部完成。当前仍有
-element 加载期校验与专属 JSON Schema、GraphSpec defaults/标准字段、运行中增量
-热更新、`-sys` 分层、scheduler/runtime 实际接线、真实 avcodec/cheetah adapter、
-设备句柄 zero-copy、指标/精度回归/码流 fuzz 和综合 demo 等软件任务。
+默认构建已经提供 GraphSpec 校验、schema 导出、pipeline/hot-update 执行、
+mock/runtime 后端、SDK-free media/stream elements、planner/bridge、C API、
+fuzz target 和 mock 多路 demo。`dg-cli` 默认 feature 为 `media`、`stream`；
+OpenVINO、RKNN、TensorRT、Sophon backend feature 默认关闭。默认媒体输入是
+录制式 raw-frame adapter；avcodec/cheetah 的可选路径和硬件句柄的真实吞吐、
+编解码及 zero-copy 仍需对应 SDK/设备验证。
 
 完整剩余任务、状态、依赖和逐 PR 验收条件见
-[design-remaining-tasks.md](design-remaining-tasks.md)。硬件验收不在通用 CI 中
-伪造；RK3588、NVIDIA GPU、Sophon 及硬件编解码端到端验收保持外部阻塞，直到对应
-自托管 runner 或目标设备产出实测报告。
+[design-remaining-tasks.md](design-remaining-tasks.md)。TEST-02 的 OpenVINO
+真实 SDK/CI 以及 HW-01 至 HW-04 保持外部阻塞，CFG-10 XML 支持为可选；不以
+mock 或静态 capability 表冒充这些验收。
 
 ---
 
 ## 12. CI / 测试策略
 - **无硬件层**：mock 后端 + 单元/集成测试跑在通用 x86 runner；`fmt`/`clippy`/`cargo test`/各 target `cargo check`。
-- **有硬件层**：OpenVINO（x86 CPU，CI 可跑）、RKNN（RK3588 自托管 runner）、TensorRT（NVIDIA runner）、Sophon（BM 卡/SE 盒 runner）—— 需用户提供或授权自托管 runner。
+- **有硬件/外部 SDK 层**：OpenVINO、RKNN、TensorRT、Sophon 以及硬件 codec
+  需要对应 SDK、设备或自托管 runner；通用 CI 只验证 SDK-free 默认路径和可编译
+  的 feature 隔离，不宣称 OpenVINO 真实模型 CI 已可用。
 - 精度回归：固定输入 → 比对各后端输出与参考（余弦相似度阈值）。
 
 ## 13. 主要风险与缓解
