@@ -63,7 +63,12 @@ impl Element for HttpPush {
         loop {
             let packet = match io.recv("in")? {
                 Some(packet) => packet,
-                None => continue,
+                None => {
+                    if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(Error::NotRunning);
+                    }
+                    continue;
+                }
             };
             if packet.is_eos() {
                 return Ok(());

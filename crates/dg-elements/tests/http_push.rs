@@ -1,8 +1,47 @@
 use std::sync::{Arc, Mutex};
 
 use dg_elements::{install_http_push_driver, HttpPushDriver, HttpPushRequest};
-use dg_graph::{find_element, Graph, GraphSpecBuilder, NodeSpec, Result};
+use dg_graph::{
+    find_element, CreatedElement, Element, ElementDescriptor, ElementHandle, ElementIo, Graph,
+    GraphSpecBuilder, NodeSpec, ParamField, PortSchema, Result,
+};
 use serde_json::json;
+use std::thread;
+use std::time::{Duration, Instant};
+
+struct StopSource;
+
+impl Element for StopSource {
+    fn run(self: Box<Self>, io: ElementIo) -> Result<()> {
+        io.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(20));
+        Ok(())
+    }
+}
+
+fn create_stop_source(_: &NodeSpec) -> Result<CreatedElement> {
+    Ok(CreatedElement {
+        element: Box::new(StopSource),
+        handle: ElementHandle::None,
+    })
+}
+
+const STOP_SOURCE_OUTPUT: [PortSchema; 1] = [PortSchema {
+    name: "out",
+    dtype: None,
+    required: false,
+}];
+
+inventory::submit! {
+    ElementDescriptor {
+        kind: "test_stop_source",
+        input_ports: &[],
+        output_ports: &STOP_SOURCE_OUTPUT,
+        params: &[] as &[ParamField],
+        validate: None,
+        create: create_stop_source,
+    }
+}
 
 #[derive(Default)]
 struct DriverState {
@@ -109,4 +148,26 @@ fn http_push_driver_receives_packets_and_reports_failures() {
     assert!(message.contains("push"), "{message}");
     assert!(message.contains("http://example.test/fail"), "{message}");
     assert!(message.contains("simulated HTTP failure"), "{message}");
+}
+
+#[test]
+fn http_push_stops_when_graph_stop_is_set_without_eos() {
+    let spec = GraphSpecBuilder::new()
+        .add_node(node("source", "test_stop_source", json!({})))
+        .add_node(node(
+            "push",
+            "http_push",
+            json!({"url": "https://example.test/events"}),
+        ))
+        .connect("source.out -> push.in")
+        .build()
+        .expect("build stop graph");
+    let start = Instant::now();
+    let result = Graph::new(spec).expect("create stop graph").run();
+    assert!(result.is_err());
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "http_push did not observe stop promptly: {:?}",
+        start.elapsed()
+    );
 }
