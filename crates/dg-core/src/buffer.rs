@@ -295,12 +295,13 @@ impl Buffer {
                 "source and destination size differ".to_string(),
             ));
         }
-        dst.copy_from_slice(&self.storage.read_bytes());
+        let bytes = self.try_read_bytes()?;
+        dst.copy_from_slice(&bytes);
         Ok(())
     }
 
     pub fn copy_to(&self, dst: &Buffer) -> Result<()> {
-        let bytes = self.read_bytes();
+        let bytes = self.try_read_bytes()?;
         dst.write_from_slice(&bytes)
     }
 

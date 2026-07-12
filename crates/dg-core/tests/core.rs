@@ -106,6 +106,32 @@ fn external_only_buffer_requires_explicit_mapping() {
 }
 
 #[test]
+fn external_only_buffer_copy_operations_return_errors() {
+    let device = CpuDevice::new();
+    let buffer = dg_core::Buffer::from_external(
+        DeviceKind::Cpu,
+        dg_core::MemoryDomain::DmaBuf,
+        BufferDesc::new(4, 1),
+        dg_core::ExternalHandle::from_fd(21),
+        dg_core::ExternalDropGuard::new(|| {}),
+    )
+    .expect("import external-only buffer");
+    let mut bytes = [0; 4];
+    assert!(matches!(
+        device.memcpy_d2h(&buffer, &mut bytes),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+
+    let destination = device
+        .alloc(BufferDesc::new(4, 1))
+        .expect("allocate destination");
+    assert!(matches!(
+        buffer.copy_to(&destination),
+        Err(dg_core::Error::Buffer(message)) if message.contains("not host-mapped")
+    ));
+}
+
+#[test]
 fn external_only_buffer_releases_guard_once_after_last_clone() {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
