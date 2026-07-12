@@ -256,6 +256,7 @@ impl Element for StreamPushElement {
                 Ok(DispatchResult::Accepted) => {}
                 Ok(DispatchResult::DroppedByPolicy) => {
                     debug!(node = %io.name, "frame dropped by backpressure policy");
+                    io.drop_packet()?;
                 }
                 Ok(DispatchResult::RejectedClosed) => {
                     return Err(dg_graph::Error::Runtime(
