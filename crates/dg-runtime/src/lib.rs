@@ -24,10 +24,10 @@ pub use capabilities::{
 pub use error::{Error, Result};
 pub use mock::MockOptions;
 pub use option::{
-    BackendConfig, BackendOptions, ModelSource, OpenVINOOptions, RknnOptions, RuntimeOption,
-    SophonOptions, TensorRtOptions,
+    BackendConfig, BackendOptions, CoreSelection, ExternalStreamHandle, ModelFormat, ModelSource,
+    OpenVINOOptions, RknnOptions, RuntimeOption, SophonOptions, TensorRtOptions,
 };
-pub use runtime::{validate_runtime_option, Runtime};
+pub use runtime::{validate_runtime_option, InferPoll, Runtime};
 pub use tensor_info::TensorInfo;
 
 inventory::collect!(BackendDescriptor);

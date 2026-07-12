@@ -3,6 +3,14 @@ use crate::{
     Error, Result, RuntimeOption, TensorInfo,
 };
 
+/// Result of polling a submitted inference.
+#[derive(Debug)]
+pub enum InferPoll {
+    Ready(Vec<dg_core::Tensor>),
+    Pending,
+    EndOfStream,
+}
+
 /// Validates common backend capabilities without initializing a device or model.
 pub fn validate_runtime_option(option: &RuntimeOption) -> Result<()> {
     if let Some(precision) = option.precision {
@@ -26,6 +34,7 @@ pub fn validate_runtime_option(option: &RuntimeOption) -> Result<()> {
 /// Runtime wrapper around a concrete backend implementation.
 pub struct Runtime {
     backend: Box<dyn crate::InferBackend>,
+    in_flight: Option<Vec<dg_core::Tensor>>,
 }
 
 impl Runtime {
@@ -33,11 +42,17 @@ impl Runtime {
         validate_runtime_option(&option)?;
         let mut backend = create_backend(option.backend)?;
         backend.init(&option)?;
-        Ok(Self { backend })
+        Ok(Self {
+            backend,
+            in_flight: None,
+        })
     }
 
     pub fn from_backend(backend: Box<dyn crate::InferBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            in_flight: None,
+        }
     }
 
     pub fn backend_kind(&self) -> BackendKind {
@@ -66,6 +81,31 @@ impl Runtime {
 
     pub fn run(&mut self, inputs: &[dg_core::Tensor]) -> Result<Vec<dg_core::Tensor>> {
         self.backend.run(inputs)
+    }
+
+    /// Submit one inference and buffer its result for [`Runtime::poll`].
+    ///
+    /// Only one submission may be in flight at a time. Call `poll` to consume
+    /// the buffered result before submitting another inference.
+    pub fn submit(
+        &mut self,
+        inputs: &[dg_core::Tensor],
+        stream: Option<&dyn dg_core::Stream>,
+    ) -> Result<()> {
+        if self.in_flight.is_some() {
+            return Err(Error::Backend(
+                "inference submission already in flight".to_string(),
+            ));
+        }
+        self.in_flight = Some(self.backend.run_with_stream(inputs, stream)?);
+        Ok(())
+    }
+
+    pub fn poll(&mut self) -> Result<InferPoll> {
+        Ok(self
+            .in_flight
+            .take()
+            .map_or(InferPoll::Pending, InferPoll::Ready))
     }
 
     pub fn backend_mut(&mut self) -> &mut dyn crate::InferBackend {

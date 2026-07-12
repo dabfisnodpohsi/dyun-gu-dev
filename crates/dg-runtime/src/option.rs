@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dg_core::{DataType, DeployMode, DeviceKind};
+use dg_core::{DataType, DeployMode, DeviceKind, StreamKind};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -11,6 +11,54 @@ use crate::{mock::MockOptions, Error, Result};
 pub enum ModelSource {
     File(PathBuf),
     Bytes(Vec<u8>),
+}
+
+/// Backend-agnostic model representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelFormat {
+    Auto,
+    Onnx,
+    Engine,
+    Rknn,
+    Bmodel,
+    OpenvinoIr,
+}
+
+impl ModelFormat {
+    /// Infers a model format from a file source, or returns `Auto` otherwise.
+    pub fn from_source(source: &ModelSource) -> Self {
+        let ModelSource::File(path) = source else {
+            return Self::Auto;
+        };
+        let Some(extension) = path.extension() else {
+            return Self::Auto;
+        };
+        match extension.to_string_lossy().to_ascii_lowercase().as_str() {
+            "onnx" => Self::Onnx,
+            "engine" | "plan" => Self::Engine,
+            "rknn" => Self::Rknn,
+            "bmodel" => Self::Bmodel,
+            "xml" => Self::OpenvinoIr,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Backend-agnostic device core selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CoreSelection {
+    #[default]
+    Auto,
+    Single(u8),
+    Mask(u32),
+    All,
+}
+
+/// Opaque stream handle for backend-specific interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalStreamHandle {
+    pub kind: StreamKind,
+    pub raw: u64,
 }
 
 /// Backend-specific options grouped by backend family.
@@ -104,6 +152,13 @@ impl BackendConfig {
             device: self.device,
             deploy_mode: self.deploy_mode,
             core_mask: self.core_mask,
+            device_id: None,
+            core: CoreSelection::Auto,
+            cpu_threads: None,
+            model_format: ModelFormat::Auto,
+            zero_copy: false,
+            dynamic_shape: false,
+            external_stream: None,
             backend_options,
         }
     }
@@ -215,6 +270,13 @@ pub struct RuntimeOption {
     pub device: Option<DeviceKind>,
     pub deploy_mode: Option<DeployMode>,
     pub core_mask: Option<u32>,
+    pub device_id: Option<u16>,
+    pub core: CoreSelection,
+    pub cpu_threads: Option<usize>,
+    pub model_format: ModelFormat,
+    pub zero_copy: bool,
+    pub dynamic_shape: bool,
+    pub external_stream: Option<ExternalStreamHandle>,
     pub backend_options: BackendOptions,
 }
 
@@ -231,6 +293,13 @@ impl RuntimeOption {
             device: None,
             deploy_mode: None,
             core_mask: None,
+            device_id: None,
+            core: CoreSelection::Auto,
+            cpu_threads: None,
+            model_format: ModelFormat::Auto,
+            zero_copy: false,
+            dynamic_shape: false,
+            external_stream: None,
             backend_options,
         }
     }
@@ -252,6 +321,41 @@ impl RuntimeOption {
 
     pub fn with_core_mask(mut self, core_mask: u32) -> Self {
         self.core_mask = Some(core_mask);
+        self
+    }
+
+    pub fn with_device_id(mut self, device_id: u16) -> Self {
+        self.device_id = Some(device_id);
+        self
+    }
+
+    pub fn with_core(mut self, core: CoreSelection) -> Self {
+        self.core = core;
+        self
+    }
+
+    pub fn with_cpu_threads(mut self, cpu_threads: usize) -> Self {
+        self.cpu_threads = Some(cpu_threads);
+        self
+    }
+
+    pub fn with_model_format(mut self, model_format: ModelFormat) -> Self {
+        self.model_format = model_format;
+        self
+    }
+
+    pub fn with_zero_copy(mut self, zero_copy: bool) -> Self {
+        self.zero_copy = zero_copy;
+        self
+    }
+
+    pub fn with_dynamic_shape(mut self, dynamic_shape: bool) -> Self {
+        self.dynamic_shape = dynamic_shape;
+        self
+    }
+
+    pub fn with_external_stream(mut self, external_stream: ExternalStreamHandle) -> Self {
+        self.external_stream = Some(external_stream);
         self
     }
 }

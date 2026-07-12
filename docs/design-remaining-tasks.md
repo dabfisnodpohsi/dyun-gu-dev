@@ -57,7 +57,7 @@
 | SYS-03 | 进行中 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
 | SYS-04 | 进行中 | `dg-sophon-sys` 分层 | BMRuntime/bmlib bindings、link 和 raw calls 移入 `dg-sophon-sys` | 无 |
 | BE-01 | 未开始 | RKNN/Sophon 无硬件 adapter type-check | stub sys 覆盖真实 backend 模块，而非只测纯转换函数；默认 CI 能发现 adapter 编译回归 | SYS-02、SYS-04 |
-| RT-01 | 未开始 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
+| RT-01 | 进行中 | 补齐统一 `RuntimeOption` 与 stream-aware inference API | 支持 device_id/core selection、cpu threads、model format、external stream、zero-copy/dynamic-shape 通用入口；`InferBackend` 提供非阻塞 submit/poll 或等价 stream API | CORE-01 |
 | RT-02 | 未开始 | 运行期 SDK/设备能力探测 | 各后端 init 查询 SDK 版本、设备、精度和部署能力；静态表仅为无硬件 fallback；不支持时给出明确诊断且不静默降级 | SYS-01 至 SYS-04 |
 | SCH-01 | 未开始 | 设备发现与 scheduler/runtime 接线 | 枚举设备/核心形成 topology；Graph inference 创建后端前获取 lease，并把 device/core/deploy mode 写入 RuntimeOption | RT-01、RT-02 |
 | SCH-02 | 未开始 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
@@ -85,6 +85,10 @@
 > CORE-01 说明：`dg-core` 通过 inventory 注册 Device/Stream/Event adapter，
 > 并提供 CPU 参考实现的 `MemoryPool`/`Allocator`；默认构建保持 SDK-free，
 > 厂商设备 adapter 延后到后续 MEM-*/RT-* 任务。
+
+> RT-01 说明：`dg-runtime` 增加统一 `RuntimeOption` 字段、`run_with_stream`
+> 以及 `Runtime` 的 submit/poll 入口；厂商字段映射延后到 RT-02、SCH-01 和
+> MEM-02。
 
 ## C. 多媒体、流媒体与 element
 

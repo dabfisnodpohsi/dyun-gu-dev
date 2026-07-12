@@ -22,6 +22,14 @@ pub trait InferBackend: Send {
     fn input_infos(&self) -> &[TensorInfo];
     fn output_infos(&self) -> &[TensorInfo];
     fn run(&mut self, inputs: &[dg_core::Tensor]) -> Result<Vec<dg_core::Tensor>>;
+
+    fn run_with_stream(
+        &mut self,
+        inputs: &[dg_core::Tensor],
+        _stream: Option<&dyn dg_core::Stream>,
+    ) -> Result<Vec<dg_core::Tensor>> {
+        self.run(inputs)
+    }
 }
 
 /// Static backend descriptor used by the registry.

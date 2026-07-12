@@ -3,8 +3,9 @@ use dg_core::{
     TensorDesc, TypeCode,
 };
 use dg_runtime::{
-    configure_backend, validate_runtime_option, BackendConfig, BackendKind, BackendOptions, Error,
-    MockOptions, ModelSource, Runtime, RuntimeOption, TensorInfo, TensorRtOptions,
+    configure_backend, validate_runtime_option, BackendConfig, BackendKind, BackendOptions,
+    CoreSelection, Error, ExternalStreamHandle, InferPoll, MockOptions, ModelFormat, ModelSource,
+    Runtime, RuntimeOption, TensorInfo, TensorRtOptions,
 };
 use serde_json::json;
 
@@ -159,4 +160,98 @@ fn runtime_option_preflight_rejects_unsupported_common_capabilities() {
     let err = validate_runtime_option(&base.with_deploy_mode(dg_core::DeployMode::SoC))
         .expect_err("deployment should be rejected");
     assert_eq!(err, Error::UnsupportedDeployment(dg_core::DeployMode::SoC));
+}
+
+#[test]
+fn runtime_option_builders_and_model_format_inference() {
+    let option = RuntimeOption::new(
+        BackendKind::Mock,
+        ModelSource::File("model.onnx".into()),
+        BackendOptions::Mock(MockOptions::default()),
+    );
+    assert_eq!(option.model_format, ModelFormat::Auto);
+    let option = option
+        .with_device_id(2)
+        .with_core(CoreSelection::Single(1))
+        .with_cpu_threads(4)
+        .with_model_format(ModelFormat::Engine)
+        .with_zero_copy(true)
+        .with_dynamic_shape(true)
+        .with_external_stream(ExternalStreamHandle {
+            kind: dg_core::StreamKind::Cpu,
+            raw: 42,
+        });
+
+    assert_eq!(option.device_id, Some(2));
+    assert_eq!(option.core, CoreSelection::Single(1));
+    assert_eq!(option.cpu_threads, Some(4));
+    assert_eq!(option.model_format, ModelFormat::Engine);
+    assert!(option.zero_copy);
+    assert!(option.dynamic_shape);
+    assert_eq!(
+        option.external_stream,
+        Some(ExternalStreamHandle {
+            kind: dg_core::StreamKind::Cpu,
+            raw: 42,
+        })
+    );
+
+    assert_eq!(
+        ModelFormat::from_source(&ModelSource::File("network.rknn".into())),
+        ModelFormat::Rknn
+    );
+    assert_eq!(
+        ModelFormat::from_source(&ModelSource::File("network.unknown".into())),
+        ModelFormat::Auto
+    );
+    assert_eq!(
+        ModelFormat::from_source(&ModelSource::Bytes(Vec::new())),
+        ModelFormat::Auto
+    );
+}
+
+#[test]
+fn runtime_submit_poll_round_trip_and_overlap_guard() {
+    let info = TensorInfo::new(Shape::new([1, 4]), DataType::U8).with_layout(DataFormat::NC);
+    let option = RuntimeOption::new(
+        BackendKind::Mock,
+        ModelSource::Bytes(Vec::new()),
+        BackendOptions::Mock(MockOptions {
+            input_infos: vec![info.clone()],
+            output_infos: vec![info],
+            echo_inputs: true,
+            fill_value: 0,
+        }),
+    );
+    let mut runtime = Runtime::new(option).expect("construct runtime");
+    assert!(matches!(runtime.poll().expect("poll"), InferPoll::Pending));
+
+    let device = dg_core::CpuDevice::new();
+    let input = Tensor::allocate(
+        &device,
+        TensorDesc::new(
+            Shape::new([1, 4]),
+            DataType::U8,
+            DataFormat::NC,
+            DeviceKind::Cpu,
+        ),
+    )
+    .expect("allocate input");
+    input
+        .buffer()
+        .write_from_slice(&[4, 3, 2, 1])
+        .expect("seed input");
+
+    runtime.submit(&[input], None).expect("submit inference");
+    let overlap = runtime
+        .submit(&[], None)
+        .expect_err("overlapping submit should fail");
+    assert!(matches!(overlap, Error::Backend(message) if message.contains("already in flight")));
+
+    let InferPoll::Ready(outputs) = runtime.poll().expect("poll result") else {
+        panic!("submission should be ready");
+    };
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].buffer().read_bytes(), vec![4, 3, 2, 1]);
+    assert!(matches!(runtime.poll().expect("poll"), InferPoll::Pending));
 }
