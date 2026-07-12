@@ -243,15 +243,29 @@ pub fn media_frame_to_avcodec_packet(
 
 #[cfg(feature = "avcodec")]
 pub fn avcodec_image_to_media_frame(image: &dg_media_avcodec::Image) -> Result<MediaFrame> {
+    avcodec_image_to_media_frame_with_processor(image, None)
+}
+
+#[cfg(feature = "avcodec")]
+pub(crate) fn avcodec_image_to_media_frame_with_processor(
+    image: &dg_media_avcodec::Image,
+    csc_processor: Option<&mut dyn dg_media_avcodec::ImageProcessor>,
+) -> Result<MediaFrame> {
     let image = if image.format == dg_media_avcodec::ImageInfo::Yuv420p {
-        let config = dg_media_avcodec::ImageProcessorConfig::new()
-            .with_memory_domain(dg_media_avcodec::MemoryDomain::Host)
-            .with_allow_staging(true)
-            .with_target_op(dg_media_avcodec::ImageOpKind::Csc);
-        let mut processor = dg_media_avcodec::default_registry_builder()
-            .build()
-            .create_image_processor(&config)
-            .map_err(crate::avcodec::map_av_error)?;
+        let mut owned_processor;
+        let processor = if let Some(processor) = csc_processor {
+            processor
+        } else {
+            let config = dg_media_avcodec::ImageProcessorConfig::new()
+                .with_memory_domain(dg_media_avcodec::MemoryDomain::Host)
+                .with_allow_staging(true)
+                .with_target_op(dg_media_avcodec::ImageOpKind::Csc);
+            owned_processor = dg_media_avcodec::default_registry_builder()
+                .build()
+                .create_image_processor(&config)
+                .map_err(crate::avcodec::map_av_error)?;
+            owned_processor.as_mut()
+        };
         processor
             .submit(dg_media_avcodec::ImageProcessRequest {
                 src: image.clone(),

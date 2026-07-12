@@ -1,8 +1,8 @@
 use dg_core::{Error, Result};
 
 use crate::bridge::{
-    avcodec_image_to_media_frame, avcodec_packet_to_media_frame, media_frame_to_avcodec_image,
-    media_frame_to_avcodec_packet,
+    avcodec_image_to_media_frame, avcodec_image_to_media_frame_with_processor,
+    avcodec_packet_to_media_frame, media_frame_to_avcodec_image, media_frame_to_avcodec_packet,
 };
 use crate::MediaFrame;
 
@@ -242,11 +242,22 @@ fn is_end_of_stream(error: &AvError) -> bool {
     error.kind() == AvErrorKind::EndOfStream
 }
 
+fn create_csc_processor() -> Result<Box<dyn ImageProcessor>> {
+    let config = ImageProcessorConfig::new()
+        .with_memory_domain(MemoryDomain::Host)
+        .with_allow_staging(true)
+        .with_target_op(dg_media_avcodec::ImageOpKind::Csc);
+    registry()
+        .create_image_processor(&config)
+        .map_err(map_av_error)
+}
+
 pub struct DecodeCore {
     decoder: Box<dyn Decoder>,
     codec: CodecId,
     eos: bool,
     pending_error: Option<Error>,
+    csc_processor: Option<Box<dyn ImageProcessor>>,
 }
 
 impl DecodeCore {
@@ -257,6 +268,7 @@ impl DecodeCore {
             codec,
             eos: false,
             pending_error: None,
+            csc_processor: None,
         })
     }
 
@@ -289,9 +301,20 @@ impl DecodeCore {
             return Err(error);
         }
         match self.decoder.poll_frame() {
-            Ok(Poll::Ready(image)) => Ok(crate::ops::MediaPoll::Ready(
-                avcodec_image_to_media_frame(&image)?,
-            )),
+            Ok(Poll::Ready(image)) => {
+                if image.format == dg_media_avcodec::ImageInfo::Yuv420p
+                    && self.csc_processor.is_none()
+                {
+                    self.csc_processor = Some(create_csc_processor()?);
+                }
+                let processor = self
+                    .csc_processor
+                    .as_mut()
+                    .map(|processor| processor.as_mut() as &mut dyn ImageProcessor);
+                Ok(crate::ops::MediaPoll::Ready(
+                    avcodec_image_to_media_frame_with_processor(&image, processor)?,
+                ))
+            }
             Ok(Poll::Pending) => Ok(crate::ops::MediaPoll::Pending),
             Ok(Poll::EndOfStream) => Ok(crate::ops::MediaPoll::EndOfStream),
             Err(error) if is_again(&error) => Ok(crate::ops::MediaPoll::Pending),
