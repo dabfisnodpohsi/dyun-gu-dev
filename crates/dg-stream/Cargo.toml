@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-cheetah = ["dep:dg-stream-cheetah", "dg-stream-cheetah/cheetah"]
+cheetah = ["dep:dg-stream-cheetah", "dg-stream-cheetah/cheetah", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
 [dependencies.dg-stream-cheetah]
 path = "../dg-stream-cheetah"

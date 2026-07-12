@@ -8,6 +8,8 @@
 mod bridge;
 mod connector;
 mod elements;
+#[cfg(feature = "cheetah")]
+mod embedded;
 mod error;
 mod hub;
 mod ids;
@@ -41,6 +43,8 @@ pub use bridge::{
 
 #[cfg(feature = "cheetah")]
 pub use connector::{install_cheetah_connector, CheetahRuntimeConnector};
+#[cfg(feature = "cheetah")]
+pub use embedded::{install_embedded_cheetah_connector, EmbeddedCheetahRuntimeConnector};
 
 #[cfg(not(feature = "cheetah"))]
 pub use bridge::media_frame_to_frame;

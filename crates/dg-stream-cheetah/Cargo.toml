@@ -8,9 +8,17 @@ rust-version.workspace = true
 
 [features]
 default = []
-cheetah = ["dep:cheetah-codec", "dep:cheetah-runtime-api", "dep:cheetah-sdk"]
+cheetah = [
+    "dep:cheetah-codec",
+    "dep:cheetah-connector",
+    "dep:cheetah-runtime-api",
+    "dep:cheetah-runtime-tokio",
+    "dep:cheetah-sdk",
+]
 
 [dependencies]
-cheetah-codec = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-codec", default-features = false, features = ["std"], optional = true }
-cheetah-runtime-api = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-runtime-api", default-features = false, optional = true }
-cheetah-sdk = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "182621c393eff754660a445d174a61e41622c660", package = "cheetah-sdk", default-features = false, features = ["macros"], optional = true }
+cheetah-codec = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "48cc74e050c4bf20dc7d8b111b83f2ab00b7999c", package = "cheetah-codec", default-features = false, features = ["std"], optional = true }
+cheetah-connector = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "48cc74e050c4bf20dc7d8b111b83f2ab00b7999c", package = "cheetah-connector", features = ["full"], optional = true }
+cheetah-runtime-api = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "48cc74e050c4bf20dc7d8b111b83f2ab00b7999c", package = "cheetah-runtime-api", default-features = false, optional = true }
+cheetah-runtime-tokio = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "48cc74e050c4bf20dc7d8b111b83f2ab00b7999c", package = "cheetah-runtime-tokio", optional = true }
+cheetah-sdk = { git = "https://github.com/ChungTak/cheetah-media-server-rs-dev.git", rev = "48cc74e050c4bf20dc7d8b111b83f2ab00b7999c", package = "cheetah-sdk", default-features = false, features = ["macros"], optional = true }
