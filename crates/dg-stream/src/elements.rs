@@ -7,7 +7,6 @@
 //! in-process, protocol schemes require the feature-gated cheetah runtime.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use dg_core::DataType;
@@ -183,7 +182,7 @@ impl Element for StreamPullElement {
         }
         let mut sequence = 0u64;
         loop {
-            if io.stop.load(Ordering::Relaxed) {
+            if io.should_stop() {
                 let _ = self.endpoint.source.close_blocking();
                 return Err(dg_graph::Error::NotRunning);
             }
@@ -234,7 +233,7 @@ impl Element for StreamPushElement {
             let packet = match io.recv("in") {
                 Ok(Some(packet)) => packet,
                 Ok(None) => {
-                    if io.stop.load(Ordering::Relaxed) {
+                    if io.should_stop() {
                         let _ = self.sink.close();
                         return Err(dg_graph::Error::NotRunning);
                     }

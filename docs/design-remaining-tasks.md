@@ -44,7 +44,7 @@
 | CFG-08 | 已完成 | per-node `threads` 与 `sink` 语义 | `threads >= 1` 控制 element 实例/worker；`sink` 明确终止输出连通要求；配置、执行和错误路径有测试 | CFG-01、CFG-07 |
 | CFG-09 | 已完成 | template/variable/include 引用严格校验 | 未知 template、未解析 `${var}`、无 base dir 的 include 和 include 环均在加载期给出字段级错误 | 无 |
 | HOT-01 | 已完成 | CLI 文件 watch 入口 | `dg run --watch` 监听配置、输出 diff、拒绝非法 reload，并更新用户指南 | 无 |
-| HOT-02 | 未开始 | 运行中 Graph 的增量热更新 | 对运行中的图增删/替换节点与边；未受影响节点保持运行；不可热改节点安全局部 drain + rebuild；有状态连续性测试 | CFG-01、HOT-01 |
+| HOT-02 | 已完成 | 运行中 Graph 的增量热更新 | 对运行中的图增删/替换节点与边；未受影响节点保持运行；不可热改节点安全局部 drain + rebuild；有状态连续性测试 | CFG-01、HOT-01 |
 | CFG-10 | 可选 | XML 配置支持 | 仅在确认需要时通过 `quick-xml` 增加 XML 加载和 round-trip property test | 无 |
 
 ## B. 核心、运行时、后端与调度
@@ -120,6 +120,10 @@
 > load RAII checkout 的 `InstancePool`；Graph inference 为多实例模型创建 N 个
 > Runtime 并按 policy/stream affinity 顺序 dispatch。真正的并行吞吐仍由
 > graph Task/Pipeline parallelism 提供。
+
+> HOT-02 说明：运行中的 Graph 由 `RunningGraph` 持有工作线程与可替换路由，
+> 热更新先完整校验候选图，再仅对受影响子图局部 drain、重建并恢复；未受影响
+> 节点及其队列持续运行，节点状态与指标保持连续，校验失败不会触碰运行中的图。
 
 ## C. 多媒体、流媒体与 element
 

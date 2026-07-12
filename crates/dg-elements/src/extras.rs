@@ -893,7 +893,7 @@ fn next_packet(io: &ElementIo) -> Result<Packet> {
         if let Some(packet) = io.recv("in")? {
             return Ok(packet);
         }
-        if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+        if io.should_stop() {
             return Err(Error::NotRunning);
         }
     }

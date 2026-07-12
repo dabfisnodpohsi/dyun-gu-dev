@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
-use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -16,9 +15,8 @@ use crate::element::{Element, ElementHandle, ElementIo, EosState};
 use crate::error::{Error, Result};
 use crate::metrics::{ElementMetrics, ElementMetricsSnapshot, MetricsSink};
 use crate::pipe::{DataPipe, PipeReceiver, PipeSender};
-use crate::pool::ThreadPool;
 use crate::registry::create_element;
-use crate::spec::{ConnectionSpec, ExecutionSpec, GraphSpec, NodeSpec, ParallelType};
+use crate::spec::{ConnectionSpec, GraphSpec, NodeSpec, ParallelType};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphDiff {
@@ -68,6 +66,17 @@ type SinkMap = BTreeMap<String, Arc<Mutex<crate::element::SinkCollector>>>;
 
 pub struct Graph {
     spec: GraphSpec,
+}
+
+/// A live execution of a graph. Workers and packet routes remain owned by
+/// this handle until [`RunningGraph::finish`] joins them.
+pub struct RunningGraph {
+    spec: GraphSpec,
+    stop: Arc<AtomicBool>,
+    workers: BTreeMap<String, LiveNode>,
+    routes: RuntimeRoutes,
+    sinks: SinkMap,
+    metrics: BTreeMap<String, Arc<ElementMetrics>>,
 }
 
 impl Graph {
@@ -154,82 +163,37 @@ impl Graph {
             queue_capacity = self.spec.execution.queue_capacity,
             "starting graph execution"
         );
+        self.start(inputs)?.finish()
+    }
+
+    /// Starts the graph without blocking the caller.
+    pub fn start(&self, inputs: HashMap<String, Vec<Tensor>>) -> Result<RunningGraph> {
         let (runtime, sinks, metrics) = RuntimeGraph::build(self.spec.clone(), inputs)?;
-        runtime.run()?;
-        let mut report = GraphReport::default();
-        for (name, sink) in sinks {
-            let guard = sink
-                .lock()
-                .map_err(|_| Error::Runtime("sink lock poisoned".to_string()))?;
-            report.sinks.insert(name.clone(), guard.tensors.clone());
-            report.detections.insert(
-                name.clone(),
-                guard
-                    .detections
-                    .iter()
-                    .flat_map(|batch| batch.iter().cloned())
-                    .collect(),
-            );
-            report.classifications.insert(
-                name.clone(),
-                guard
-                    .classifications
-                    .iter()
-                    .flat_map(|batch| batch.iter().cloned())
-                    .collect(),
-            );
-            report.faces.insert(
-                name.clone(),
-                guard
-                    .faces
-                    .iter()
-                    .flat_map(|batch| batch.iter().cloned())
-                    .collect(),
-            );
-            report.tracks.insert(
-                name.clone(),
-                guard
-                    .tracks
-                    .iter()
-                    .flat_map(|batch| batch.iter().cloned())
-                    .collect(),
-            );
-            report.ocr.insert(
-                name,
-                guard
-                    .ocr
-                    .iter()
-                    .flat_map(|batch| batch.iter().cloned())
-                    .collect(),
-            );
-        }
-        for (node, metrics) in metrics {
-            let snapshot = metrics.snapshot();
-            info!(
-                node = %node,
-                packets_processed = snapshot.packets_processed,
-                packets_received = snapshot.packets_received,
-                packets_sent = snapshot.packets_sent,
-                processing_latency_ns = snapshot.processing_latency_ns,
-                processing_latency_avg_ns = snapshot.processing_latency_avg_ns,
-                processing_latency_max_ns = snapshot.processing_latency_max_ns,
-                queue_depth = snapshot.queue_depth,
-                max_queue_depth = snapshot.max_queue_depth,
-                drop_count = snapshot.drop_count,
-                backpressure_count = snapshot.backpressure_count,
-                "element metrics"
-            );
-            report.element_metrics.insert(node, snapshot);
-        }
-        Ok(report)
+        runtime.start(sinks, metrics)
     }
 }
 
 pub struct RuntimeGraph {
     nodes: Vec<ExecNode>,
-    edges: Vec<(String, String)>,
+    routes: RuntimeRoutes,
+    spec: GraphSpec,
     stop: Arc<AtomicBool>,
-    execution: ExecutionSpec,
+}
+
+struct RuntimeRoutes {
+    edges: BTreeMap<String, EdgeRoute>,
+    inputs: BTreeMap<(String, String), Arc<Mutex<PipeReceiver>>>,
+    outputs: BTreeMap<(String, String), Arc<Mutex<Vec<PipeSender>>>>,
+}
+
+struct EdgeRoute {
+    sender: PipeSender,
+    receiver: Arc<Mutex<PipeReceiver>>,
+}
+
+struct LiveNode {
+    control: Arc<crate::element::NodeControl>,
+    workers: Vec<thread::JoinHandle<Result<()>>>,
 }
 
 impl RuntimeGraph {
@@ -294,15 +258,17 @@ impl RuntimeGraph {
             guard.extend(tensors);
         }
 
-        let mut edges = Vec::with_capacity(spec.connections.len());
+        let mut edge_routes = BTreeMap::new();
+        let mut input_routes = BTreeMap::new();
+        let mut output_routes = BTreeMap::new();
         for connection in &spec.connections {
             let parsed = ConnectionSpec::parse(connection)?;
-            edges.push((parsed.from_node.clone(), parsed.to_node.clone()));
             let pipe = match spec.execution.parallel {
                 ParallelType::Pipeline => DataPipe::bounded(spec.execution.queue_capacity),
                 ParallelType::Sequential | ParallelType::Task => DataPipe::unbounded(),
             };
             let (sender, receiver) = pipe.split();
+            let receiver = Arc::new(Mutex::new(receiver));
             {
                 let src = nodes.get_mut(&parsed.from_node).ok_or_else(|| {
                     Error::Config(format!("missing source node {}", parsed.from_node))
@@ -310,7 +276,7 @@ impl RuntimeGraph {
                 src.outputs
                     .entry(parsed.from_port.clone())
                     .or_default()
-                    .push(sender);
+                    .push(sender.clone());
             }
             let dst = nodes.get_mut(&parsed.to_node).ok_or_else(|| {
                 Error::Config(format!("missing destination node {}", parsed.to_node))
@@ -321,8 +287,26 @@ impl RuntimeGraph {
                     parsed.to_node, parsed.to_port
                 )));
             }
-            dst.inputs
-                .insert(parsed.to_port.clone(), Arc::new(Mutex::new(receiver)));
+            dst.inputs.insert(parsed.to_port.clone(), receiver.clone());
+            edge_routes.insert(
+                connection.clone(),
+                EdgeRoute {
+                    sender,
+                    receiver: receiver.clone(),
+                },
+            );
+        }
+
+        for node in nodes.values() {
+            for (port, receiver) in &node.inputs {
+                input_routes.insert((node.name.clone(), port.clone()), receiver.clone());
+            }
+            for (port, senders) in &node.outputs {
+                output_routes.insert(
+                    (node.name.clone(), port.clone()),
+                    Arc::new(Mutex::new(senders.clone())),
+                );
+            }
         }
 
         for node in nodes.values() {
@@ -351,6 +335,7 @@ impl RuntimeGraph {
                 broadcasts: 0,
                 instances: node.elements.len(),
             }));
+            let control = Arc::new(crate::element::NodeControl::default());
             for element in node.elements {
                 let io = ElementIo {
                     name: node.name.clone(),
@@ -359,8 +344,21 @@ impl RuntimeGraph {
                         .iter()
                         .map(|(port, receiver)| (port.clone(), receiver.clone()))
                         .collect(),
-                    outputs: node.outputs.clone(),
+                    outputs: node
+                        .outputs
+                        .iter()
+                        .map(|(port, senders)| {
+                            (
+                                port.clone(),
+                                output_routes
+                                    .get(&(node.name.clone(), port.clone()))
+                                    .cloned()
+                                    .unwrap_or_else(|| Arc::new(Mutex::new(senders.clone()))),
+                            )
+                        })
+                        .collect(),
                     stop: stop.clone(),
+                    control: control.clone(),
                     send_backoff: Duration::from_millis(1),
                     eos: eos.clone(),
                     metrics: node_metrics.clone(),
@@ -377,149 +375,429 @@ impl RuntimeGraph {
         Ok((
             Self {
                 nodes: exec_nodes,
-                edges,
+                routes: RuntimeRoutes {
+                    edges: edge_routes,
+                    inputs: input_routes,
+                    outputs: output_routes,
+                },
+                spec: spec.clone(),
                 stop,
-                execution: spec.execution.clone(),
             },
             sinks,
             metrics,
         ))
     }
 
-    fn run(self) -> Result<()> {
-        match self.execution.parallel {
-            ParallelType::Sequential => self.run_sequential(),
-            ParallelType::Task => self.run_task(),
-            ParallelType::Pipeline => self.run_pipeline(),
+    fn start(
+        self,
+        sinks: SinkMap,
+        metrics: BTreeMap<String, Arc<ElementMetrics>>,
+    ) -> Result<RunningGraph> {
+        let mut workers = BTreeMap::new();
+        let mut grouped: BTreeMap<String, Vec<ExecNode>> = BTreeMap::new();
+        for node in self.nodes {
+            grouped.entry(node.name.clone()).or_default().push(node);
         }
+        for node_spec in &self.spec.nodes {
+            let exec_nodes = grouped.remove(&node_spec.name).ok_or_else(|| {
+                Error::Runtime(format!("missing runtime node {}", node_spec.name))
+            })?;
+            let first = exec_nodes.first().ok_or_else(|| {
+                Error::Runtime(format!("node {} has no executable workers", node_spec.name))
+            })?;
+            let control = first.io.control.clone();
+            let mut handles = Vec::with_capacity(exec_nodes.len());
+            for node in exec_nodes {
+                let stop = self.stop.clone();
+                handles.push(thread::spawn(move || {
+                    run_element(node.element, node.io, &stop)
+                }));
+            }
+            workers.insert(
+                node_spec.name.clone(),
+                LiveNode {
+                    control,
+                    workers: handles,
+                },
+            );
+        }
+        if !grouped.is_empty() {
+            return Err(Error::Runtime("runtime contains unknown nodes".to_string()));
+        }
+        Ok(RunningGraph {
+            spec: self.spec,
+            stop: self.stop,
+            workers,
+            routes: self.routes,
+            sinks,
+            metrics,
+        })
     }
+}
 
-    fn run_sequential(self) -> Result<()> {
-        let order = topological_order(&self.nodes, &self.edges)?;
-        let mut by_name: HashMap<String, ExecNode> = self
-            .nodes
-            .into_iter()
-            .map(|node| (node.name.clone(), node))
-            .collect();
-        for name in order {
-            let node = by_name
-                .remove(&name)
-                .ok_or_else(|| Error::Runtime(format!("missing runtime node {name}")))?;
-            run_element(node.element, node.io, &self.stop)?;
+impl RunningGraph {
+    /// Applies a validated graph diff while workers are running.
+    pub fn apply_hot_update(&mut self, diff: GraphDiff) -> Result<()> {
+        if diff.is_empty() {
+            return Ok(());
         }
+        let candidate = self.spec.clone().merge_for_diff(diff.clone())?;
+        candidate.validate()?;
+
+        let mut affected = BTreeMap::<String, ()>::new();
+        for name in diff
+            .removed_nodes
+            .iter()
+            .chain(diff.updated_nodes.iter().map(|node| &node.name))
+        {
+            affected.insert(name.clone(), ());
+        }
+        for node in &diff.added_nodes {
+            affected.insert(node.name.clone(), ());
+        }
+        for connection in diff
+            .added_connections
+            .iter()
+            .chain(diff.removed_connections.iter())
+        {
+            let parsed = ConnectionSpec::parse(connection)?;
+            affected.insert(parsed.from_node, ());
+            affected.insert(parsed.to_node, ());
+        }
+
+        let mut prepared = BTreeMap::new();
+        for node in &candidate.nodes {
+            if affected.contains_key(&node.name) {
+                prepared.insert(node.name.clone(), PreparedNode::new(node)?);
+            }
+        }
+
+        let affected_names = affected.keys().cloned().collect::<Vec<_>>();
+        for name in &affected_names {
+            if let Some(node) = self.workers.get(name) {
+                node.control
+                    .stop
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let mut next_edges = BTreeMap::new();
+        let mut drain_routes = Vec::new();
+        for connection in &candidate.connections {
+            let parsed = ConnectionSpec::parse(connection)?;
+            let old_route = self.routes.edges.remove(connection);
+            let route = if !affected.contains_key(&parsed.to_node) {
+                old_route.ok_or_else(|| {
+                    Error::Runtime(format!("missing route for connection {connection}"))
+                })?
+            } else {
+                let pipe = match candidate.execution.parallel {
+                    ParallelType::Pipeline => DataPipe::bounded(candidate.execution.queue_capacity),
+                    ParallelType::Sequential | ParallelType::Task => DataPipe::unbounded(),
+                };
+                let (sender, receiver) = pipe.split();
+                if let Some(old_route) = old_route {
+                    drain_routes.push((
+                        old_route.receiver,
+                        sender.clone(),
+                        !affected.contains_key(&parsed.from_node),
+                    ));
+                }
+                EdgeRoute {
+                    sender,
+                    receiver: Arc::new(Mutex::new(receiver)),
+                }
+            };
+            next_edges.insert(connection.clone(), route);
+        }
+
+        let mut next_inputs = BTreeMap::new();
+        let mut output_senders = BTreeMap::<(String, String), Vec<PipeSender>>::new();
+        for connection in &candidate.connections {
+            let parsed = ConnectionSpec::parse(connection)?;
+            let route = next_edges.get(connection).ok_or_else(|| {
+                Error::Runtime(format!("missing route for connection {connection}"))
+            })?;
+            next_inputs.insert(
+                (parsed.to_node.clone(), parsed.to_port.clone()),
+                route.receiver.clone(),
+            );
+            let output_key = (parsed.from_node.clone(), parsed.from_port.clone());
+            output_senders
+                .entry(output_key)
+                .or_default()
+                .push(route.sender.clone());
+        }
+        let mut next_outputs = BTreeMap::new();
+        for (output_key, senders) in output_senders {
+            let route = self
+                .routes
+                .outputs
+                .get(&output_key)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
+            *route
+                .lock()
+                .map_err(|_| Error::Runtime("output route lock poisoned".to_string()))? = senders;
+            next_outputs.insert(output_key, route);
+        }
+
+        self.routes.edges = next_edges;
+        self.routes.inputs = next_inputs.clone();
+        self.routes.outputs = next_outputs;
+
+        for name in &affected_names {
+            if let Some(mut node) = self.workers.remove(name) {
+                join_workers(&mut node.workers, true)?;
+            }
+        }
+
+        for node in &candidate.nodes {
+            if !affected.contains_key(&node.name) {
+                continue;
+            }
+            let Some(prepared_node) = prepared.remove(&node.name) else {
+                continue;
+            };
+            let control = Arc::new(crate::element::NodeControl::default());
+            let eos = Arc::new(Mutex::new(EosState {
+                seen: false,
+                broadcasts: 0,
+                instances: prepared_node.elements.len(),
+            }));
+            let node_metrics = Arc::new(ElementMetrics::default());
+            let mut routes_in = HashMap::new();
+            let mut routes_out = HashMap::new();
+            for connection in &candidate.connections {
+                let parsed = ConnectionSpec::parse(connection)?;
+                if parsed.to_node == node.name {
+                    let key = (node.name.clone(), parsed.to_port.clone());
+                    let route = next_inputs
+                        .get(&key)
+                        .cloned()
+                        .ok_or_else(|| Error::Runtime("missing input route".to_string()))?;
+                    routes_in.insert(parsed.to_port, route);
+                }
+                if parsed.from_node == node.name {
+                    let key = (node.name.clone(), parsed.from_port.clone());
+                    let route = self
+                        .routes
+                        .outputs
+                        .get(&key)
+                        .cloned()
+                        .ok_or_else(|| Error::Runtime("missing output route".to_string()))?;
+                    routes_out.insert(parsed.from_port, route);
+                }
+            }
+            let mut handles = Vec::with_capacity(prepared_node.elements.len());
+            for element in prepared_node.elements {
+                let io = ElementIo {
+                    name: node.name.clone(),
+                    inputs: routes_in.clone(),
+                    outputs: routes_out.clone(),
+                    stop: self.stop.clone(),
+                    control: control.clone(),
+                    send_backoff: Duration::from_millis(1),
+                    eos: eos.clone(),
+                    metrics: node_metrics.clone(),
+                    packet_starts: std::cell::RefCell::new(VecDeque::new()),
+                };
+                let stop = self.stop.clone();
+                handles.push(thread::spawn(move || run_element(element, io, &stop)));
+            }
+            self.workers.insert(
+                node.name.clone(),
+                LiveNode {
+                    control,
+                    workers: handles,
+                },
+            );
+        }
+        for (old_receiver, sender, upstream_stays_live) in drain_routes {
+            loop {
+                let packet = {
+                    let receiver = old_receiver
+                        .lock()
+                        .map_err(|_| Error::Runtime("drain route lock poisoned".to_string()))?;
+                    if upstream_stays_live {
+                        receiver.recv_timeout(Duration::from_millis(1))
+                    } else {
+                        receiver.try_recv().map_err(|error| match error {
+                            std::sync::mpsc::TryRecvError::Empty => {
+                                std::sync::mpsc::RecvTimeoutError::Timeout
+                            }
+                            std::sync::mpsc::TryRecvError::Disconnected => {
+                                std::sync::mpsc::RecvTimeoutError::Disconnected
+                            }
+                        })
+                    }
+                };
+                match packet {
+                    Ok(packet) => {
+                        let mut pending = packet;
+                        let is_eos = pending.is_eos();
+                        loop {
+                            match sender.try_send(pending) {
+                                Ok(()) => break,
+                                Err(std::sync::mpsc::TrySendError::Full(packet)) => {
+                                    pending = packet;
+                                    thread::sleep(Duration::from_millis(1));
+                                    if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return Err(Error::NotRunning);
+                                    }
+                                    continue;
+                                }
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                    return Err(Error::Runtime(
+                                        "drain route disconnected".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                        if is_eos {
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !upstream_stays_live => {
+                        break;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(Error::NotRunning);
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        }
+        self.spec = candidate;
         Ok(())
     }
 
-    fn run_pipeline(self) -> Result<()> {
-        let pool = ThreadPool::new(self.nodes.len().max(1))?;
-        let (results, receiver) = mpsc::channel();
-        let total = self.nodes.len();
-        for node in self.nodes {
-            let results = results.clone();
-            let stop = self.stop.clone();
-            pool.spawn(move || {
-                let result = run_element(node.element, node.io, &stop);
-                let _ = results.send(result);
-            })?;
-        }
-        drop(results);
+    /// Joins all workers and returns the collected sink report.
+    pub fn finish(self) -> Result<GraphReport> {
         let mut first_error = None;
-        for _ in 0..total {
-            match receiver.recv() {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    first_error = select_error(first_error, err);
-                }
-                Err(_) => {
-                    first_error = select_error(
-                        first_error,
-                        Error::Runtime("element worker lost".to_string()),
-                    );
-                    break;
-                }
+        for (_, mut node) in self.workers {
+            if let Err(error) = join_workers(&mut node.workers, false) {
+                first_error = select_error(first_error, error);
             }
         }
-        match first_error {
-            Some(err) => Err(err),
-            None => Ok(()),
+        if let Some(error) = first_error {
+            return Err(error);
         }
+        collect_report(&self.sinks, &self.metrics)
     }
 
-    fn run_task(self) -> Result<()> {
-        // Reject cycles up front; dependency-driven scheduling cannot make
-        // progress on cyclic graphs.
-        topological_order(&self.nodes, &self.edges)?;
-        let workers = match self.execution.workers {
-            Some(workers) => workers,
-            None => thread::available_parallelism()
-                .map(NonZeroUsize::get)
-                .unwrap_or(1),
-        }
-        .min(self.nodes.len().max(1));
-        let pool = ThreadPool::new(workers)?;
+    /// Alias for [`RunningGraph::finish`].
+    pub fn join(self) -> Result<GraphReport> {
+        self.finish()
+    }
+}
 
-        let mut indegree: HashMap<String, usize> = self
-            .nodes
-            .iter()
-            .map(|node| (node.name.clone(), 0))
-            .collect();
-        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
-        for (from, to) in &self.edges {
-            if let Some(count) = indegree.get_mut(to) {
-                *count += 1;
+struct PreparedNode {
+    elements: Vec<Box<dyn Element>>,
+}
+
+impl PreparedNode {
+    fn new(node: &NodeSpec) -> Result<Self> {
+        let threads = node.threads.unwrap_or(1);
+        let created = create_element(node)?;
+        if threads > 1 && (node.kind == "source" || !matches!(&created.handle, ElementHandle::None))
+        {
+            return Err(Error::Config(format!(
+                "node {} cannot be multi-instanced because source elements and elements with special handles are single-instance",
+                node.name
+            )));
+        }
+        let mut elements = vec![created.element];
+        for _ in 1..threads {
+            let created = create_element(node)?;
+            if node.kind == "source" || !matches!(&created.handle, ElementHandle::None) {
+                return Err(Error::Config(format!(
+                    "node {} cannot be multi-instanced because source elements and elements with special handles are single-instance",
+                    node.name
+                )));
             }
-            dependents.entry(from.clone()).or_default().push(to.clone());
+            elements.push(created.element);
         }
+        Ok(Self { elements })
+    }
+}
 
-        let mut waiting: HashMap<String, ExecNode> = self
-            .nodes
-            .into_iter()
-            .map(|node| (node.name.clone(), node))
-            .collect();
-        let ready: Vec<String> = indegree
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        let (results, receiver) = mpsc::channel::<(String, Result<()>)>();
-        let mut running = 0usize;
-        for name in ready {
-            spawn_task(&pool, &mut waiting, &name, &self.stop, &results)?;
-            running += 1;
-        }
-
-        let mut first_error = None;
-        while running > 0 {
-            let (name, result) = receiver
-                .recv()
-                .map_err(|_| Error::Runtime("element worker lost".to_string()))?;
-            running -= 1;
-            match result {
-                Ok(()) => {
-                    if first_error.is_none() {
-                        for dependent in dependents.remove(&name).unwrap_or_default() {
-                            let Some(count) = indegree.get_mut(&dependent) else {
-                                continue;
-                            };
-                            *count -= 1;
-                            if *count == 0 {
-                                spawn_task(&pool, &mut waiting, &dependent, &self.stop, &results)?;
-                                running += 1;
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    first_error = select_error(first_error, err);
-                }
+fn join_workers(workers: &mut Vec<thread::JoinHandle<Result<()>>>, cancelled: bool) -> Result<()> {
+    let mut first_error = None;
+    while let Some(worker) = workers.pop() {
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if cancelled && is_cancellation(&error) => {}
+            Ok(Err(error)) => first_error = select_error(first_error, error),
+            Err(_) => {
+                first_error = select_error(
+                    first_error,
+                    Error::Runtime("element worker panicked".to_string()),
+                )
             }
-        }
-        match first_error {
-            Some(err) => Err(err),
-            None => Ok(()),
         }
     }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn collect_report(
+    sinks: &SinkMap,
+    metrics: &BTreeMap<String, Arc<ElementMetrics>>,
+) -> Result<GraphReport> {
+    let mut report = GraphReport::default();
+    for (name, sink) in sinks {
+        let guard = sink
+            .lock()
+            .map_err(|_| Error::Runtime("sink lock poisoned".to_string()))?;
+        report.sinks.insert(name.clone(), guard.tensors.clone());
+        report.detections.insert(
+            name.clone(),
+            guard
+                .detections
+                .iter()
+                .flat_map(|batch| batch.iter().cloned())
+                .collect(),
+        );
+        report.classifications.insert(
+            name.clone(),
+            guard
+                .classifications
+                .iter()
+                .flat_map(|batch| batch.iter().cloned())
+                .collect(),
+        );
+        report.faces.insert(
+            name.clone(),
+            guard
+                .faces
+                .iter()
+                .flat_map(|batch| batch.iter().cloned())
+                .collect(),
+        );
+        report.tracks.insert(
+            name.clone(),
+            guard
+                .tracks
+                .iter()
+                .flat_map(|batch| batch.iter().cloned())
+                .collect(),
+        );
+        report.ocr.insert(
+            name.clone(),
+            guard
+                .ocr
+                .iter()
+                .flat_map(|batch| batch.iter().cloned())
+                .collect(),
+        );
+    }
+    for (node, metrics) in metrics {
+        report
+            .element_metrics
+            .insert(node.clone(), metrics.snapshot());
+    }
+    Ok(report)
 }
 
 fn is_cancellation(error: &Error) -> bool {
@@ -535,29 +813,13 @@ fn select_error(current: Option<Error>, candidate: Error) -> Option<Error> {
     }
 }
 
-fn spawn_task(
-    pool: &ThreadPool,
-    waiting: &mut HashMap<String, ExecNode>,
-    name: &str,
-    stop: &Arc<AtomicBool>,
-    results: &mpsc::Sender<(String, Result<()>)>,
-) -> Result<()> {
-    let node = waiting
-        .remove(name)
-        .ok_or_else(|| Error::Runtime(format!("missing runtime node {name}")))?;
-    let stop = stop.clone();
-    let results = results.clone();
-    pool.spawn(move || {
-        let result = run_element(node.element, node.io, &stop);
-        let _ = results.send((node.name, result));
-    })
-}
-
 fn run_element(element: Box<dyn Element>, io: ElementIo, stop: &Arc<AtomicBool>) -> Result<()> {
     match catch_unwind(AssertUnwindSafe(|| element.run(io))) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(err)) => {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            if !is_cancellation(&err) {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             Err(err)
         }
         Err(_) => {
@@ -565,41 +827,6 @@ fn run_element(element: Box<dyn Element>, io: ElementIo, stop: &Arc<AtomicBool>)
             Err(Error::Runtime("element panicked".to_string()))
         }
     }
-}
-
-fn topological_order(nodes: &[ExecNode], edges: &[(String, String)]) -> Result<Vec<String>> {
-    let mut indegree: BTreeMap<&str, usize> =
-        nodes.iter().map(|node| (node.name.as_str(), 0)).collect();
-    let mut adjacency: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (from, to) in edges {
-        if let Some(count) = indegree.get_mut(to.as_str()) {
-            *count += 1;
-        }
-        adjacency.entry(from.as_str()).or_default().push(to);
-    }
-    let mut ready: Vec<&str> = indegree
-        .iter()
-        .filter(|(_, count)| **count == 0)
-        .map(|(name, _)| *name)
-        .collect();
-    let mut order = Vec::with_capacity(nodes.len());
-    while let Some(name) = ready.pop() {
-        order.push(name.to_string());
-        for &next in adjacency.get(name).map(Vec::as_slice).unwrap_or_default() {
-            if let Some(count) = indegree.get_mut(next) {
-                *count -= 1;
-                if *count == 0 {
-                    ready.push(next);
-                }
-            }
-        }
-    }
-    if order.len() != nodes.len() {
-        return Err(Error::Config(
-            "sequential/task execution requires an acyclic graph".to_string(),
-        ));
-    }
-    Ok(order)
 }
 
 struct NodeRuntime {

@@ -132,7 +132,7 @@ impl Element for InferenceElement {
             let packet = match io.recv("in") {
                 Ok(Some(packet)) => packet,
                 Ok(None) => {
-                    if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if io.should_stop() {
                         return Err(Error::NotRunning);
                     }
                     continue;

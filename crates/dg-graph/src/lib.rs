@@ -20,7 +20,7 @@ mod schema;
 mod spec;
 
 pub use element::{CreatedElement, Element, ElementHandle, ElementIo, PortSchema, SinkCollector};
-pub use engine::{watch, Graph, GraphDiff, GraphReport, WatchHandle};
+pub use engine::{watch, Graph, GraphDiff, GraphReport, RunningGraph, WatchHandle};
 pub use error::{Error, Result};
 pub use metrics::{ElementMetricsSnapshot, MetricsSink};
 pub use packet::{Packet, PacketMeta, PacketPayload};

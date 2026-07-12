@@ -242,7 +242,7 @@ impl Element for Converger {
                     None => {}
                 }
             }
-            if !received && io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if !received && io.should_stop() {
                 return Err(Error::NotRunning);
             }
         }

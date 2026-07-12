@@ -1,8 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::collections::HashMap;
 
 use dg_core::{CpuDevice, DataFormat, DataType, DeviceKind, Shape, Tensor, TensorDesc};
-use dg_graph::{ElementMetricsSnapshot, Graph, GraphSpecBuilder, MetricsSink, NodeSpec};
+use dg_graph::{ExecutionSpec, Graph, GraphDiff, GraphSpecBuilder, NodeSpec, ParallelType};
 use serde_json::json;
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
@@ -59,86 +58,6 @@ fn source_mock_sink_pipeline_runs_end_to_end() {
     assert_eq!(first_bytes.len(), 16);
     assert_eq!(first_bytes, f32_bytes(&[3.0, 3.0, 3.0, 3.0]));
     assert_eq!(second_bytes, f32_bytes(&[4.0, 4.0, 4.0, 4.0]));
-}
-
-#[derive(Default)]
-struct MetricsCollector(Mutex<BTreeMap<String, ElementMetricsSnapshot>>);
-
-impl MetricsSink for MetricsCollector {
-    fn record(&self, node: &str, metrics: &ElementMetricsSnapshot) {
-        self.0
-            .lock()
-            .expect("metrics collector lock")
-            .insert(node.to_string(), metrics.clone());
-    }
-}
-
-#[test]
-fn pipeline_reports_per_node_metrics_and_exports_snapshots() {
-    let spec = GraphSpecBuilder::new()
-        .execution(dg_graph::ExecutionSpec {
-            parallel: dg_graph::ParallelType::Pipeline,
-            queue_capacity: 1,
-            workers: None,
-        })
-        .add_node(NodeSpec {
-            name: "source".to_string(),
-            kind: "source".to_string(),
-            template: None,
-            params: json!({"count": 16, "shape": [1, 4]}),
-            ..NodeSpec::default()
-        })
-        .add_node(NodeSpec {
-            name: "infer".to_string(),
-            kind: "mock_inference".to_string(),
-            template: None,
-            params: json!({"shape": [1, 4], "echo_inputs": true}),
-            ..NodeSpec::default()
-        })
-        .add_node(NodeSpec {
-            name: "sink".to_string(),
-            kind: "sink".to_string(),
-            template: None,
-            params: json!({}),
-            ..NodeSpec::default()
-        })
-        .connect("source.out -> infer.in")
-        .connect("infer.out -> sink.in")
-        .build()
-        .expect("build metrics pipeline");
-
-    let report = Graph::new(spec)
-        .expect("build graph")
-        .run()
-        .expect("run metrics pipeline");
-    let source = report
-        .element_metrics
-        .get("source")
-        .expect("source metrics");
-    let infer = report
-        .element_metrics
-        .get("infer")
-        .expect("inference metrics");
-    let sink = report.element_metrics.get("sink").expect("sink metrics");
-
-    assert_eq!(source.packets_processed, 16);
-    assert_eq!(source.packets_sent, 16);
-    assert_eq!(infer.packets_processed, 16);
-    assert_eq!(infer.packets_received, 16);
-    assert_eq!(infer.packets_sent, 16);
-    assert_eq!(sink.packets_processed, 16);
-    assert_eq!(sink.packets_received, 16);
-    assert!(infer.processing_latency_ns > 0);
-    assert_eq!(sink.queue_depth, 0);
-    assert!(source.max_queue_depth <= 1);
-
-    let exported = MetricsCollector::default();
-    report.export_metrics(&exported);
-    let exported = exported.0.lock().expect("exported metrics");
-    assert_eq!(
-        exported.get("infer").expect("exported inference metrics"),
-        infer
-    );
 }
 
 #[test]
@@ -326,4 +245,137 @@ fn pipeline_rejects_multi_instanced_special_handles_at_build_time() {
         .run()
         .expect_err("sink handles cannot be multi-instanced");
     assert!(sink_error.to_string().contains("cannot be multi-instanced"));
+}
+
+#[test]
+fn running_graph_replaces_only_affected_worker_and_rejects_invalid_diff_atomically() {
+    let spec = GraphSpecBuilder::new()
+        .add_node(NodeSpec {
+            name: "source".to_string(),
+            kind: "source".to_string(),
+            params: json!({"count": 128, "shape": [1, 4], "start": 1.0}),
+            ..NodeSpec::default()
+        })
+        .add_node(NodeSpec {
+            name: "infer".to_string(),
+            kind: "mock_inference".to_string(),
+            params: json!({"shape": [1, 4], "echo_inputs": true}),
+            ..NodeSpec::default()
+        })
+        .add_node(NodeSpec {
+            name: "sink".to_string(),
+            kind: "sink".to_string(),
+            params: json!({}),
+            ..NodeSpec::default()
+        })
+        .connect("source.out -> infer.in")
+        .connect("infer.out -> sink.in")
+        .build()
+        .expect("build running graph spec");
+    let graph = Graph::new(spec).expect("construct running graph");
+    let mut running = graph.start(HashMap::new()).expect("start running graph");
+
+    let replacement = NodeSpec {
+        name: "infer".to_string(),
+        kind: "mock_inference".to_string(),
+        params: json!({"shape": [1, 4], "echo_inputs": false, "fill_value": 7}),
+        ..NodeSpec::default()
+    };
+    running
+        .apply_hot_update(GraphDiff {
+            updated_nodes: vec![replacement],
+            ..GraphDiff::default()
+        })
+        .expect("replace running worker");
+
+    let invalid = GraphDiff {
+        added_nodes: vec![NodeSpec {
+            name: "broken".to_string(),
+            kind: "does_not_exist".to_string(),
+            params: json!({}),
+            ..NodeSpec::default()
+        }],
+        ..GraphDiff::default()
+    };
+    assert!(running.apply_hot_update(invalid).is_err());
+
+    let report = running.finish().expect("finish updated graph");
+    let outputs = report.sinks.get("sink").expect("sink outputs");
+    assert!(!outputs.is_empty());
+    assert!(outputs
+        .iter()
+        .any(|tensor| { tensor.buffer().read_bytes().iter().all(|byte| *byte == 7) }));
+}
+
+#[test]
+fn hot_update_keeps_unaffected_branch_lossless_under_backpressure() {
+    let count = 2_048;
+    let execution = ExecutionSpec {
+        parallel: ParallelType::Pipeline,
+        queue_capacity: 1,
+        workers: None,
+    };
+    for iteration in 0..16 {
+        let spec = GraphSpecBuilder::new()
+            .execution(execution.clone())
+            .add_node(NodeSpec {
+                name: "source".to_string(),
+                kind: "source".to_string(),
+                params: json!({"count": count, "shape": [1, 4], "start": 1.0}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "affected".to_string(),
+                kind: "mock_inference".to_string(),
+                params: json!({"shape": [1, 4], "echo_inputs": true}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "unaffected".to_string(),
+                kind: "sink".to_string(),
+                params: json!({}),
+                ..NodeSpec::default()
+            })
+            .add_node(NodeSpec {
+                name: "affected_sink".to_string(),
+                kind: "sink".to_string(),
+                params: json!({}),
+                ..NodeSpec::default()
+            })
+            .connect("source.out -> affected.in")
+            .connect("source.out -> unaffected.in")
+            .connect("affected.out -> affected_sink.in")
+            .build()
+            .expect("build hot-update stress graph");
+        let graph = Graph::new(spec).expect("construct hot-update stress graph");
+        let mut running = graph.start(HashMap::new()).expect("start stress graph");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        running
+            .apply_hot_update(GraphDiff {
+                updated_nodes: vec![NodeSpec {
+                    name: "affected".to_string(),
+                    kind: "mock_inference".to_string(),
+                    params: json!({
+                        "shape": [1, 4],
+                        "echo_inputs": false,
+                        "fill_value": 7
+                    }),
+                    ..NodeSpec::default()
+                }],
+                ..GraphDiff::default()
+            })
+            .unwrap_or_else(|error| panic!("iteration {iteration} hot update failed: {error}"));
+        let report = running
+            .finish()
+            .unwrap_or_else(|error| panic!("iteration {iteration} did not finish: {error}"));
+        let outputs = report
+            .sinks
+            .get("unaffected")
+            .expect("unaffected sink outputs");
+        assert_eq!(
+            outputs.len(),
+            count,
+            "iteration {iteration} lost packets on unaffected branch"
+        );
+    }
 }

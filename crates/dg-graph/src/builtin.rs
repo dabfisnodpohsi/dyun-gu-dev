@@ -176,7 +176,7 @@ impl Element for SourceElement {
     fn run(self: Box<Self>, io: ElementIo) -> Result<()> {
         trace!(node = %io.name, count = self.count, "running source element");
         for index in 0..self.count {
-            if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if io.should_stop() {
                 return Err(Error::NotRunning);
             }
             let step = usize_to_exact_f32(index, "source index")?;
@@ -222,7 +222,7 @@ impl Element for MockInferenceElement {
             let packet = match io.recv("in") {
                 Ok(Some(packet)) => packet,
                 Ok(None) => {
-                    if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if io.should_stop() {
                         return Err(Error::NotRunning);
                     }
                     continue;
@@ -268,7 +268,7 @@ impl Element for SinkElement {
             let packet = match io.recv("in") {
                 Ok(Some(packet)) => packet,
                 Ok(None) => {
-                    if io.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if io.should_stop() {
                         return Err(Error::NotRunning);
                     }
                     continue;

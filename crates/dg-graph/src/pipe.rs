@@ -1,7 +1,9 @@
 //! Bounded/unbounded typed packet queues connecting graph elements.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, TrySendError};
+use std::sync::mpsc::{
+    channel, sync_channel, Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,6 +106,10 @@ impl PipeReceiver {
 
     pub(crate) fn depth(&self) -> usize {
         self.state.depth.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn try_recv(&self) -> std::result::Result<Packet, TryRecvError> {
+        self.receiver.try_recv()
     }
 }
 
