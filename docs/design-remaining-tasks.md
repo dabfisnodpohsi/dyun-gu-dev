@@ -63,7 +63,7 @@
 | SCH-02 | 已完成 | 多实例负载均衡 | 同模型按 core/card 创建实例池；支持 least-loaded、round-robin、显式绑定和 stream affinity；lease 生命周期反映在途负载 | SCH-01 |
 | MEM-01 | 已完成 | 真正的外部设备 buffer | `Buffer` 可只持 dma-buf/device ptr 而不分配等长 host Vec；host 访问必须显式 map/stage；C ABI 导入保持 RAII 所有权 | CORE-01、SYS-02 至 SYS-04 |
 | MEM-02 | 未开始 | 各后端 external-buffer zero-copy 入口 | RKNN `create_mem_from_fd`、TensorRT CUDA ptr、Sophon device mem、OpenVINO remote/host tensor 按能力直接绑定；不兼容时 staging 并记录 copy count | MEM-01、RT-02 |
-| CAPI-01 | 未开始 | C ABI 后端直接生命周期与能力接口 | 提供 backend 创建/配置/能力查询/销毁，不要求调用者必须构造 Graph；同步头文件、错误码与 C 示例 | RT-01、RT-02 |
+| CAPI-01 | 已完成 | C ABI 后端直接生命周期与能力接口 | `DgBackend` 提供直接创建/初始化、输入输出能力查询、mock 推理运行与销毁；cbindgen 头文件、Rust FFI 测试和 `direct_backend.c` 示例同步更新 | RT-01、RT-02 |
 
 > SYS-01 说明：社区 `openvino` crate 的 FFI/link 依赖已隔离到
 > `dg-openvino-sys`；`dg-openvino` 仅保留 `#![forbid(unsafe_code)]` 的安全
@@ -101,6 +101,11 @@
 > RT-02 说明：`dg-runtime` 增加运行期 capability probe、静态表 fallback
 > 以及显式 no-downgrade 诊断；厂商 probe override 按 backend feature
 > 隔离，需 SDK 的路径仅做编译覆盖，默认构建保持 SDK-free。
+
+> CAPI-01 说明：C ABI 通过 `DgBackend` 提供无需构造 Graph 的直接
+> create/init、capability 与 tensor-info 查询、run 和 free 生命周期，并复用
+> `dg-runtime` 现有 backend factory；cbindgen 头文件与 `direct_backend.c`
+> 示例保持同步。
 
 > SCH-01 说明：`CoreSelection` 统一下沉到 `dg-core`，注册设备用于构建
 > topology；Graph inference 获取 lease 并回写 RuntimeOption 的 device/core/deploy；
