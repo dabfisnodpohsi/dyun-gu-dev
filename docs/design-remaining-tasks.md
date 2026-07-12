@@ -51,7 +51,7 @@
 
 | ID | 状态 | 独立 PR 范围 | 验收条件 | 依赖 |
 |---|---|---|---|---|
-| CORE-01 | 未开始 | 完成 device/memory/stream 抽象 | 增加可注册的非 CPU Device/Stream/Event adapter 与 MemoryPool/Allocator；上层不直接依赖厂商 FFI | SYS-01 至 SYS-04 |
+| CORE-01 | 进行中 | 完成 device/memory/stream 抽象 | 增加可注册的非 CPU Device/Stream/Event adapter 与 MemoryPool/Allocator；上层不直接依赖厂商 FFI | SYS-01 至 SYS-04 |
 | SYS-01 | 进行中 | `dg-openvino-sys` 分层 | FFI/link 只在 `-sys`；`dg-openvino` 保持 safe wrapper；默认构建无 SDK | 无 |
 | SYS-02 | 进行中 | `dg-rknn-sys` 分层 | bindgen/build/link/unsafe 移入 `dg-rknn-sys`；安全 crate 仅 RAII 与 `InferBackend` | 无 |
 | SYS-03 | 进行中 | `dg-tensorrt-sys` 分层 | TensorRT/CUDA shim、bindings、link 和 raw calls 移入 `dg-tensorrt-sys` | 无 |
@@ -81,6 +81,10 @@
 > `dg-tensorrt-sys`；`dg-tensorrt` 保留 RAII、错误转换、`InferBackend`
 > 安全适配和 SDK-free 的 `mock_sys` 测试路径。默认构建不启用 backend，
 > 因此仍不需要 CUDA 或 TensorRT SDK。
+
+> CORE-01 说明：`dg-core` 通过 inventory 注册 Device/Stream/Event adapter，
+> 并提供 CPU 参考实现的 `MemoryPool`/`Allocator`；默认构建保持 SDK-free，
+> 厂商设备 adapter 延后到后续 MEM-*/RT-* 任务。
 
 ## C. 多媒体、流媒体与 element
 

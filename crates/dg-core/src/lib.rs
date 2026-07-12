@@ -27,11 +27,18 @@ pub use deployment::DeployMode;
 pub use detection::{
     BBox, Classification, Detection, FaceDetection, OcrText, Point, Track, TrackState,
 };
-pub use device::{CpuDevice, Device, DeviceKind, MemoryType};
+pub use device::{
+    registered_device_kinds, registered_devices, resolve_device, CpuDevice, Device,
+    DeviceDescriptor, DeviceKind, MemoryType,
+};
 pub use error::{Error, Result};
 pub use format::DataFormat;
-pub use memory::{ExternalDropGuard, ExternalHandle, MemoryDomain};
+pub use memory::{
+    Allocator, CpuAllocator, ExternalDropGuard, ExternalHandle, MemoryDomain, MemoryPool,
+};
 pub use quantization::{Quantization, QuantizationScheme};
 pub use shape::{Shape, Strides};
 pub use stream::{CpuEvent, CpuStream, Event, EventKind, Stream, StreamKind};
 pub use tensor::{Tensor, TensorDesc};
+
+inventory::collect!(DeviceDescriptor);

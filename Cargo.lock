@@ -1423,6 +1423,7 @@ name = "dg-core"
 version = "0.1.0"
 dependencies = [
  "half",
+ "inventory",
  "proptest",
  "thiserror 1.0.69",
  "tracing",

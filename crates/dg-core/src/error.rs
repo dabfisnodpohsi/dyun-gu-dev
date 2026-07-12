@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::DeviceKind;
+
 /// Result type used throughout `dg-core`.
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -34,6 +36,8 @@ pub enum Error {
     OutOfMemory,
     #[error("unsupported: {0}")]
     Unsupported(String),
+    #[error("unsupported device: {0:?}")]
+    UnsupportedDevice(DeviceKind),
 }
 
 impl From<std::io::Error> for Error {
