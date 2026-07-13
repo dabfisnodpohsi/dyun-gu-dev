@@ -45,7 +45,14 @@
 | CFG-09 | 已完成 | template/variable/include 引用严格校验 | 未知 template、未解析 `${var}`、无 base dir 的 include 和 include 环均在加载期给出字段级错误 | 无 |
 | HOT-01 | 已完成 | CLI 文件 watch 入口 | `dg run --watch` 监听配置、输出 diff、拒绝非法 reload，并更新用户指南 | 无 |
 | HOT-02 | 已完成 | 运行中 Graph 的增量热更新 | 对运行中的图增删/替换节点与边；未受影响节点保持运行；不可热改节点安全局部 drain + rebuild；有状态连续性测试 | CFG-01、HOT-01 |
-| CFG-10 | 可选 | XML 配置支持 | 仅在确认需要时通过 `quick-xml` 增加 XML 加载和 round-trip property test | 无 |
+| CFG-10 | 可选（不实现） | XML 配置支持 | 仅在确认需要时通过 `quick-xml` 增加 XML 加载和 round-trip property test | 无 |
+
+> CFG-10 说明：经确认不实现 XML 配置格式。JSON 已是一等、无损、可 round-trip
+> 的配置格式（`GraphFormat::Json`），在功能上完全覆盖需求；`GraphSpec.params`
+> 为任意 `serde_json::Value`，字段级原生 XML 无法在不引入带类型标注的自定义
+> schema 的前提下保持无损，而唯一能保证无损的 JSON-in-XML 信封相对直接使用
+> JSON 对用户没有增益。除非出现必须消费/产出真 XML 的外部系统约束，本项保持
+> 不实现，避免引入摆设式格式与额外依赖。
 
 ## B. 核心、运行时、后端与调度
 
@@ -213,7 +220,10 @@
 > 生命周期条件时才成立，其余情况显式 staging 或 Unsupported 并记录 copy count；
 > OpenVINO GPU/NPU、remote tensor 与 HW-* 验收仍保持外部阻塞。已完成状态仅保留在有代码和
 > 测试依据的任务，`TEST-02` 的 CPU CI 已完成，`HW-01` 至 `HW-04` 仍为外部阻塞，
-> `CFG-10` 仍为可选。
+> `CFG-10`（XML 配置）经确认不实现（JSON 已覆盖需求，见上文 CFG-10 说明）。
+>
+> 当前进度：除 `HW-01`~`HW-04`（需真实硬件/自托管 runner，外部阻塞）与
+> 主动放弃的 `CFG-10` 外，所有软件任务均已完成并合入 `main`。
 
 ## E. 需要真实硬件或自托管 runner 的最终验收
 
